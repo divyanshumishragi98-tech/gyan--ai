@@ -1,110 +1,271 @@
 import os
 import time
+import json
+import urllib.request
+import urllib.error
+
 import gradio as gr
 from google import genai
 
 
 # =========================================================
-# GEMINI API SETUP
+# API SETUP
 # =========================================================
 
-API_KEY = os.environ.get("GEMINI_API_KEY")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 
-client = genai.Client(api_key=API_KEY) if API_KEY else None
+gemini_client = (
+    genai.Client(api_key=GEMINI_API_KEY)
+    if GEMINI_API_KEY
+    else None
+)
 
 
 # =========================================================
-# GEMINI QUESTION FUNCTION
+# OPENROUTER MODELS
+# =========================================================
+
+OPENROUTER_MODELS = [
+    "nex-agi/nex-n2.5-mini:free",
+    "nex-agi/nex-n2.5-pro:free",
+    "inclusionai/ling-3.0-flash-sante:free",
+    "dots-studio/dots-3-note-preview:free",
+    "liquid/lfm-2.5-2.6b:free",
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "nvidia/nemotron-3-super-120b-a12b:free",
+    "openrouter/free",
+]
+
+
+# =========================================================
+# OPENROUTER FUNCTION
+# =========================================================
+
+def ask_openrouter(message, history):
+
+    if not OPENROUTER_API_KEY:
+        return None
+
+    # Current question + recent conversation
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are Gyan AI, a helpful and friendly AI assistant. "
+                "Answer clearly and accurately. "
+                "Use the same language as the user's question. "
+                "For students, explain concepts simply."
+            )
+        }
+    ]
+
+    # Keep recent chat context
+    for item in (history or [])[-10:]:
+        if not isinstance(item, dict):
+            continue
+
+        role = item.get("role")
+        content = item.get("content")
+
+        if role not in ("user", "assistant"):
+            continue
+
+        if isinstance(content, str) and content.strip():
+            messages.append({
+                "role": role,
+                "content": content
+            })
+
+    # Add current question
+    messages.append({
+        "role": "user",
+        "content": message
+    })
+
+    url = "https://openrouter.ai/api/v1/chat/completions"
+
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    for model in OPENROUTER_MODELS:
+
+        payload = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": 700,
+            "temperature": 0.4,
+        }
+
+        request = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+
+        try:
+            with urllib.request.urlopen(
+                request,
+                timeout=45
+            ) as response:
+
+                data = json.loads(
+                    response.read().decode("utf-8")
+                )
+
+            choices = data.get("choices", [])
+
+            if not choices:
+                continue
+
+            content = choices[0].get(
+                "message", {}
+            ).get("content")
+
+            # Normal text response
+            if isinstance(content, str) and content.strip():
+                return content.strip()
+
+            # Some APIs may return content blocks
+            if isinstance(content, list):
+                text_parts = []
+
+                for item in content:
+                    if (
+                        isinstance(item, dict)
+                        and item.get("type") == "text"
+                    ):
+                        text_parts.append(
+                            item.get("text", "")
+                        )
+
+                answer = "\n".join(text_parts).strip()
+
+                if answer:
+                    return answer
+
+        except urllib.error.HTTPError as error:
+            # Try the next model on rate limits or provider errors
+            print(
+                f"OpenRouter model failed: {model} "
+                f"(HTTP {error.code})"
+            )
+
+        except Exception as error:
+            print(
+                f"OpenRouter model failed: {model} "
+                f"({type(error).__name__})"
+            )
+
+        time.sleep(1)
+
+    return None
+
+
+# =========================================================
+# GEMINI FUNCTION
 # =========================================================
 
 def ask_gemini(message, history):
 
-    # Empty message
     if not message or not message.strip():
-        return "", history
+        return "", history or []
 
-    # Make sure history exists
-    history = history or []
+    history = list(history or [])
 
-    # Add user's question
+    # Save the question
     history.append({
         "role": "user",
         "content": message
     })
 
+    answer = None
+
     # =====================================================
-    # API KEY CHECK
+    # TRY GEMINI FIRST
     # =====================================================
 
-    if client is None:
-
-        answer = (
-            "⚠️ Gemini API अभी configure नहीं हुई है.\n\n"
-            "Admin को GEMINI_API_KEY check करनी होगी."
-        )
-
-    else:
-
-        answer = None
-
-        # =================================================
-        # GEMINI RETRY SYSTEM
-        # =================================================
+    if gemini_client is not None:
 
         for attempt in range(3):
 
             try:
-
-                response = client.models.generate_content(
-                    model="gemini-3.6-flash",
-                    contents=message
+                response = (
+                    gemini_client.models.generate_content(
+                        model="gemini-3.6-flash",
+                        contents=message
+                    )
                 )
 
-                # Successful response
-                answer = response.text
+                if response.text and response.text.strip():
+                    answer = response.text.strip()
+                    break
 
-                break
+            except Exception as error:
 
-            except Exception as e:
+                error_text = str(error).lower()
 
-                error_text = str(e)
-
-                # =========================================
-                # TEMPORARY GEMINI ERRORS
-                # =========================================
-
-                temporary_error = (
-                    "429" in error_text
-                    or "503" in error_text
-                    or "UNAVAILABLE" in error_text
-                    or "RESOURCE_EXHAUSTED" in error_text
-                    or "overloaded" in error_text.lower()
+                temporary_error = any(
+                    term in error_text
+                    for term in [
+                        "429",
+                        "503",
+                        "unavailable",
+                        "resource_exhausted",
+                        "overloaded",
+                        "timeout",
+                    ]
                 )
 
-                if temporary_error:
+                # Retry temporary errors
+                if temporary_error and attempt < 2:
+                    time.sleep(2)
+                    continue
 
-                    # Retry if attempts are remaining
-                    if attempt < 2:
-
-                        time.sleep(3)
-
-                        continue
-
-                # =========================================
-                # FINAL ERROR
-                # =========================================
-
-                answer = (
-                    "⚠️ अभी Gemini से जवाब नहीं मिल पाया।\n\n"
-                    "थोड़ी देर बाद फिर से कोशिश करें।"
+                print(
+                    "Gemini failed:",
+                    type(error).__name__
                 )
-
                 break
 
     # =====================================================
-    # ADD AI ANSWER
+    # FALL BACK TO OPENROUTER
     # =====================================================
 
+    if not answer:
+
+        print("Trying OpenRouter fallback...")
+
+        answer = ask_openrouter(
+            message,
+            history[:-1]
+        )
+
+    # =====================================================
+    # FINAL MESSAGE
+    # =====================================================
+
+    if not answer:
+
+        if not GEMINI_API_KEY and not OPENROUTER_API_KEY:
+            answer = (
+                "⚠️ कोई AI API configure नहीं है।\n\n"
+                "Admin को Render Environment में "
+                "GEMINI_API_KEY और OPENROUTER_API_KEY "
+                "जाँचना होगा।"
+            )
+        else:
+            answer = (
+                "⚠️ अभी AI से जवाब नहीं मिल पाया।\n\n"
+                "सभी उपलब्ध मॉडल व्यस्त हो सकते हैं या "
+                "उनकी उपयोग सीमा पूरी हो सकती है। "
+                "थोड़ी देर बाद फिर कोशिश करें।"
+            )
+
+    # Save the AI answer
     history.append({
         "role": "assistant",
         "content": answer
@@ -118,7 +279,6 @@ def ask_gemini(message, history):
 # =========================================================
 
 def clear_chat():
-
     return []
 
 
@@ -127,51 +287,37 @@ def clear_chat():
 # =========================================================
 
 css = """
-
 body {
     background: #f7f8fc;
 }
 
-
-/* Main application */
 #app {
     max-width: 900px;
     margin: auto;
 }
 
-
-/* Header */
 #title {
     text-align: center;
     padding: 18px;
 }
 
-
-/* Chat */
 #chat {
     border-radius: 18px;
 }
 
-
-/* Message box */
 #message textarea {
     border-radius: 24px !important;
 }
 
-
-/* Send button */
 #send {
     border-radius: 50% !important;
     min-width: 48px !important;
     height: 48px !important;
 }
 
-
-/* New chat button */
 #newchat {
     border-radius: 12px !important;
 }
-
 """
 
 
@@ -180,12 +326,9 @@ body {
 # =========================================================
 
 with gr.Blocks(
-    title="Gyan AI"
+    title="Gyan AI",
+    css=css
 ) as app:
-
-    # =====================================================
-    # HEADER
-    # =====================================================
 
     gr.Markdown(
         """
@@ -196,21 +339,11 @@ with gr.Blocks(
         """
     )
 
-
-    # =====================================================
-    # CHAT WINDOW
-    # =====================================================
-
     chatbot = gr.Chatbot(
         elem_id="chat",
         height=520,
         placeholder="👋 Ask Gyan AI anything..."
     )
-
-
-    # =====================================================
-    # QUESTION INPUT
-    # =====================================================
 
     with gr.Row():
 
@@ -227,60 +360,26 @@ with gr.Blocks(
             scale=1
         )
 
-
-    # =====================================================
-    # NEW CHAT
-    # =====================================================
-
     new_chat_btn = gr.Button(
         "＋ New Chat",
         elem_id="newchat"
     )
 
-
-    # =====================================================
-    # SEND BUTTON
-    # =====================================================
-
     send.click(
         ask_gemini,
-        inputs=[
-            message,
-            chatbot
-        ],
-        outputs=[
-            message,
-            chatbot
-        ]
+        inputs=[message, chatbot],
+        outputs=[message, chatbot]
     )
-
-
-    # =====================================================
-    # ENTER KEY
-    # =====================================================
 
     message.submit(
         ask_gemini,
-        inputs=[
-            message,
-            chatbot
-        ],
-        outputs=[
-            message,
-            chatbot
-        ]
+        inputs=[message, chatbot],
+        outputs=[message, chatbot]
     )
-
-
-    # =====================================================
-    # NEW CHAT BUTTON
-    # =====================================================
 
     new_chat_btn.click(
         clear_chat,
-        outputs=[
-            chatbot
-        ]
+        outputs=[chatbot]
     )
 
 
@@ -290,8 +389,5 @@ with gr.Blocks(
 
 app.launch(
     server_name="0.0.0.0",
-    server_port=int(
-        os.environ.get("PORT", 7860)
-    ),
-    css=css
+    server_port=int(os.environ.get("PORT", 7860))
 )
