@@ -9,7 +9,7 @@ from google import genai
 
 
 # =========================================================
-# API SETUP
+# GYAN AI - API SETUP
 # =========================================================
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -39,29 +39,19 @@ OPENROUTER_MODELS = [
 
 
 # =========================================================
-# OPENROUTER FUNCTION
+# CHAT HISTORY HELPER
 # =========================================================
 
-def ask_openrouter(message, history):
+def get_previous_messages(history):
+    """
+    Gradio chat history से पिछली बातचीत निकालता है।
+    केवल user और assistant के text messages रखता है।
+    """
 
-    if not OPENROUTER_API_KEY:
-        return None
+    messages = []
 
-    # Current question + recent conversation
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "You are Gyan AI, a helpful and friendly AI assistant. "
-                "Answer clearly and accurately. "
-                "Use the same language as the user's question. "
-                "For students, explain concepts simply."
-            )
-        }
-    ]
+    for item in (history or [])[-20:]:
 
-    # Keep recent chat context
-    for item in (history or [])[-10:]:
         if not isinstance(item, dict):
             continue
 
@@ -74,10 +64,134 @@ def ask_openrouter(message, history):
         if isinstance(content, str) and content.strip():
             messages.append({
                 "role": role,
-                "content": content
+                "content": content.strip()
             })
 
-    # Add current question
+    return messages
+
+
+# =========================================================
+# GEMINI FUNCTION WITH CHAT MEMORY
+# =========================================================
+
+def ask_gemini_model(message, previous_messages):
+
+    if gemini_client is None:
+        return None
+
+    # पिछली बातचीत को Gemini के prompt में जोड़ना
+    conversation = []
+
+    for item in previous_messages:
+        if item["role"] == "user":
+            conversation.append(
+                "User: " + item["content"]
+            )
+        else:
+            conversation.append(
+                "Gyan AI: " + item["content"]
+            )
+
+    previous_chat = (
+        "\n".join(conversation)
+        if conversation
+        else "यह नई बातचीत है।"
+    )
+
+    prompt = f"""
+तुम Gyan AI हो, एक helpful AI assistant।
+
+महत्वपूर्ण निर्देश:
+1. पिछली बातचीत को ध्यान से पढ़ो।
+2. उपयोगकर्ता ने अपना नाम या कोई जानकारी पहले बताई हो,
+   तो उसी बातचीत के संदर्भ में उसका उपयोग करो।
+3. अगर उपयोगकर्ता पूछे कि उसने पहले क्या बताया था,
+   तो पिछली बातचीत के आधार पर जवाब दो।
+4. उपयोगकर्ता की भाषा में जवाब दो।
+5. अगर जानकारी पिछली बातचीत में नहीं है,
+   तो साफ बताओ कि तुम्हें वह जानकारी नहीं मिली।
+6. बिना आधार के कोई व्यक्तिगत जानकारी मत बनाओ।
+
+पिछली बातचीत:
+{previous_chat}
+
+अभी उपयोगकर्ता का सवाल:
+{message}
+
+Gyan AI का जवाब:
+"""
+
+    for attempt in range(3):
+
+        try:
+            response = gemini_client.models.generate_content(
+                model="gemini-3.6-flash",
+                contents=prompt
+            )
+
+            answer = getattr(response, "text", None)
+
+            if isinstance(answer, str) and answer.strip():
+                return answer.strip()
+
+        except Exception as error:
+
+            error_text = str(error).lower()
+
+            temporary_error = any(
+                term in error_text
+                for term in [
+                    "429",
+                    "503",
+                    "unavailable",
+                    "resource_exhausted",
+                    "overloaded",
+                    "timeout",
+                ]
+            )
+
+            print(
+                "Gemini error:",
+                type(error).__name__
+            )
+
+            if temporary_error and attempt < 2:
+                time.sleep(2)
+                continue
+
+            break
+
+    return None
+
+
+# =========================================================
+# OPENROUTER FUNCTION WITH CHAT MEMORY
+# =========================================================
+
+def ask_openrouter_model(message, previous_messages):
+
+    if not OPENROUTER_API_KEY:
+        return None
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are Gyan AI, a helpful and friendly AI assistant. "
+                "Use the same language as the user's question. "
+                "Remember and use the conversation history provided "
+                "in this request. If the user previously shared "
+                "their name or other information in this conversation, "
+                "use it when relevant. Do not invent personal details. "
+                "Explain things simply for students."
+            )
+        }
+    ]
+
+    # पिछली बातचीत
+    messages.extend(previous_messages)
+
+    # वर्तमान सवाल
     messages.append({
         "role": "user",
         "content": message
@@ -125,12 +239,11 @@ def ask_openrouter(message, history):
                 "message", {}
             ).get("content")
 
-            # Normal text response
             if isinstance(content, str) and content.strip():
                 return content.strip()
 
-            # Some APIs may return content blocks
             if isinstance(content, list):
+
                 text_parts = []
 
                 for item in content:
@@ -148,13 +261,14 @@ def ask_openrouter(message, history):
                     return answer
 
         except urllib.error.HTTPError as error:
-            # Try the next model on rate limits or provider errors
+
             print(
                 f"OpenRouter model failed: {model} "
                 f"(HTTP {error.code})"
             )
 
         except Exception as error:
+
             print(
                 f"OpenRouter model failed: {model} "
                 f"({type(error).__name__})"
@@ -166,7 +280,7 @@ def ask_openrouter(message, history):
 
 
 # =========================================================
-# GEMINI FUNCTION
+# MAIN QUESTION FUNCTION
 # =========================================================
 
 def ask_gemini(message, history):
@@ -174,80 +288,25 @@ def ask_gemini(message, history):
     if not message or not message.strip():
         return "", history or []
 
-    history = list(history or [])
+    # पुरानी बातचीत को पहले सुरक्षित निकालें
+    previous_messages = get_previous_messages(history)
 
-    # Save the question
-    history.append({
-        "role": "user",
-        "content": message
-    })
+    # Gemini पहले कोशिश करेगा
+    answer = ask_gemini_model(
+        message,
+        previous_messages
+    )
 
-    answer = None
-
-    # =====================================================
-    # TRY GEMINI FIRST
-    # =====================================================
-
-    if gemini_client is not None:
-
-        for attempt in range(3):
-
-            try:
-                response = (
-                    gemini_client.models.generate_content(
-                        model="gemini-3.6-flash",
-                        contents=message
-                    )
-                )
-
-                if response.text and response.text.strip():
-                    answer = response.text.strip()
-                    break
-
-            except Exception as error:
-
-                error_text = str(error).lower()
-
-                temporary_error = any(
-                    term in error_text
-                    for term in [
-                        "429",
-                        "503",
-                        "unavailable",
-                        "resource_exhausted",
-                        "overloaded",
-                        "timeout",
-                    ]
-                )
-
-                # Retry temporary errors
-                if temporary_error and attempt < 2:
-                    time.sleep(2)
-                    continue
-
-                print(
-                    "Gemini failed:",
-                    type(error).__name__
-                )
-                break
-
-    # =====================================================
-    # FALL BACK TO OPENROUTER
-    # =====================================================
-
+    # Gemini विफल होने पर OpenRouter
     if not answer:
-
         print("Trying OpenRouter fallback...")
 
-        answer = ask_openrouter(
+        answer = ask_openrouter_model(
             message,
-            history[:-1]
+            previous_messages
         )
 
-    # =====================================================
-    # FINAL MESSAGE
-    # =====================================================
-
+    # दोनों से जवाब न मिले
     if not answer:
 
         if not GEMINI_API_KEY and not OPENROUTER_API_KEY:
@@ -255,23 +314,31 @@ def ask_gemini(message, history):
                 "⚠️ कोई AI API configure नहीं है।\n\n"
                 "Admin को Render Environment में "
                 "GEMINI_API_KEY और OPENROUTER_API_KEY "
-                "जाँचना होगा।"
+                "जाँचनी होंगी।"
             )
+
         else:
             answer = (
                 "⚠️ अभी AI से जवाब नहीं मिल पाया।\n\n"
-                "सभी उपलब्ध मॉडल व्यस्त हो सकते हैं या "
-                "उनकी उपयोग सीमा पूरी हो सकती है। "
-                "थोड़ी देर बाद फिर कोशिश करें।"
+                "मॉडल व्यस्त हो सकते हैं या उनकी उपयोग सीमा "
+                "पूरी हो सकती है। कृपया थोड़ी देर बाद कोशिश करें।"
             )
 
-    # Save the AI answer
-    history.append({
+    # पुरानी बातचीत को बनाए रखें
+    updated_history = list(history or [])
+
+    # वर्तमान सवाल और जवाब जोड़ें
+    updated_history.append({
+        "role": "user",
+        "content": message
+    })
+
+    updated_history.append({
         "role": "assistant",
         "content": answer
     })
 
-    return "", history
+    return "", updated_history
 
 
 # =========================================================
@@ -365,18 +432,21 @@ with gr.Blocks(
         elem_id="newchat"
     )
 
+    # Send button
     send.click(
         ask_gemini,
         inputs=[message, chatbot],
         outputs=[message, chatbot]
     )
 
+    # Enter key
     message.submit(
         ask_gemini,
         inputs=[message, chatbot],
         outputs=[message, chatbot]
     )
 
+    # New chat
     new_chat_btn.click(
         clear_chat,
         outputs=[chatbot]
