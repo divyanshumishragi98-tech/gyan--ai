@@ -559,4 +559,512 @@ def save_message(
 
             conn.close()
 
+# ============================================================
+# GET CONVERSATION MESSAGES
+# ============================================================
 
+def get_conversation_messages(
+    user_id: str,
+    conversation_id: str,
+    limit: int = 80
+):
+
+    if (
+        not DATABASE_URL
+        or not conversation_id
+    ):
+
+        return []
+
+    conn = None
+
+    try:
+
+        conn = get_db()
+
+        cur = conn.cursor(
+            cursor_factory=RealDictCursor
+        )
+
+        cur.execute("""
+            SELECT
+                id,
+                role,
+                content
+
+            FROM (
+                SELECT
+                    id,
+                    role,
+                    content
+
+                FROM messages
+
+                WHERE user_id = %s
+                  AND conversation_id = %s
+
+                ORDER BY id DESC
+
+                LIMIT %s
+
+            ) AS recent
+
+            ORDER BY id ASC
+        """, (
+            user_id,
+            conversation_id,
+            limit
+        ))
+
+        rows = cur.fetchall()
+
+        cur.close()
+
+        return [
+            {
+                "role": row["role"],
+                "content": row["content"]
+            }
+
+            for row in rows
+        ]
+
+    except Exception as error:
+
+        print(
+            "LOAD CONVERSATION ERROR:",
+            type(error).__name__,
+            str(error)
+        )
+
+        return []
+
+    finally:
+
+        if conn:
+
+            conn.close()
+
+
+# ============================================================
+# SEARCH WORDS
+# ============================================================
+
+def extract_search_words(
+    text: str
+):
+
+    if not text:
+
+        return []
+
+    words = re.findall(
+        r"[A-Za-z0-9\u0900-\u097F]+",
+        str(text).lower()
+    )
+
+    stop_words = {
+        "the", "is", "am", "are", "was", "were",
+        "what", "why", "how", "when", "where",
+        "who", "which", "can", "could", "would",
+        "should", "do", "does", "did", "and",
+        "or", "to", "of", "in", "on", "for",
+        "a", "an", "my", "me", "i", "you",
+        "your", "it", "this", "that",
+        "hai", "ho", "hoga", "kya", "kaise",
+        "kyon", "kyun", "mujhe", "mera", "meri",
+        "main", "mai", "ke", "ki", "ka", "ko",
+        "se", "mein",
+        "और", "या", "है", "हूँ", "मैं",
+        "मेरा", "मेरी", "मुझे", "क्या",
+        "कैसे", "क्यों", "अब", "यह", "इस",
+        "के", "की", "का", "को", "में", "से"
+    }
+
+    result = []
+
+    for word in words:
+
+        if (
+            len(word) >= 3
+            and word not in stop_words
+            and word not in result
+        ):
+
+            result.append(word)
+
+    return result[:15]
+
+
+# ============================================================
+# SEARCH RELEVANT OLD MESSAGES
+# ============================================================
+
+def search_relevant_old_messages(
+    user_id: str,
+    current_conversation_id: str,
+    query: str,
+    limit: int = 15
+):
+
+    if not DATABASE_URL:
+
+        return []
+
+    keywords = extract_search_words(
+        query
+    )
+
+    if not keywords:
+
+        return []
+
+    conn = None
+
+    try:
+
+        conn = get_db()
+
+        cur = conn.cursor(
+            cursor_factory=RealDictCursor
+        )
+
+        conditions = [
+            "LOWER(content) LIKE %s"
+            for _ in keywords
+        ]
+
+        params = [
+            user_id,
+            current_conversation_id
+        ]
+
+        params.extend(
+            f"%{keyword}%"
+            for keyword in keywords
+        )
+
+        sql = f"""
+            SELECT
+                conversation_id,
+                role,
+                content,
+                created_at
+
+            FROM messages
+
+            WHERE user_id = %s
+              AND conversation_id != %s
+              AND (
+                  {" OR ".join(conditions)}
+              )
+
+            ORDER BY created_at DESC
+
+            LIMIT %s
+        """
+
+        params.append(limit)
+
+        cur.execute(
+            sql,
+            params
+        )
+
+        rows = cur.fetchall()
+
+        cur.close()
+
+        return rows
+
+    except Exception as error:
+
+        print(
+            "OLD MESSAGE SEARCH ERROR:",
+            type(error).__name__,
+            str(error)
+        )
+
+        return []
+
+    finally:
+
+        if conn:
+
+            conn.close()
+
+
+# ============================================================
+# MEMORY KEY
+# ============================================================
+
+def deterministic_key(
+    prefix: str,
+    value: str
+) -> str:
+
+    digest = hashlib.sha256(
+        str(value)
+        .strip()
+        .lower()
+        .encode("utf-8")
+    ).hexdigest()[:16]
+
+    return f"{prefix}:{digest}"
+
+
+# ============================================================
+# SAVE MEMORY
+# ============================================================
+
+def save_memory(
+    user_id: str,
+    memory_key: str,
+    memory_value: str
+):
+
+    if not DATABASE_URL:
+
+        return
+
+    memory_value = str(
+        memory_value or ""
+    ).strip()
+
+    if not memory_value:
+
+        return
+
+    conn = None
+
+    try:
+
+        conn = get_db()
+
+        cur = conn.cursor()
+
+        cur.execute("""
+            INSERT INTO memories (
+                user_id,
+                memory_key,
+                memory_value
+            )
+
+            VALUES (
+                %s,
+                %s,
+                %s
+            )
+
+            ON CONFLICT (
+                user_id,
+                memory_key
+            )
+
+            DO UPDATE SET
+
+                memory_value =
+                    EXCLUDED.memory_value,
+
+                updated_at =
+                    CURRENT_TIMESTAMP
+        """, (
+            user_id,
+            memory_key,
+            memory_value
+        ))
+
+        conn.commit()
+
+        cur.close()
+
+    except Exception as error:
+
+        print(
+            "SAVE MEMORY ERROR:",
+            type(error).__name__,
+            str(error)
+        )
+
+    finally:
+
+        if conn:
+
+            conn.close()
+
+
+# ============================================================
+# GET MEMORY
+# ============================================================
+
+def get_memories(
+    user_id: str,
+    limit: int = 50
+):
+
+    if not DATABASE_URL:
+
+        return []
+
+    conn = None
+
+    try:
+
+        conn = get_db()
+
+        cur = conn.cursor(
+            cursor_factory=RealDictCursor
+        )
+
+        cur.execute("""
+            SELECT
+                memory_key,
+                memory_value
+
+            FROM memories
+
+            WHERE user_id = %s
+
+            ORDER BY updated_at DESC
+
+            LIMIT %s
+        """, (
+            user_id,
+            limit
+        ))
+
+        rows = cur.fetchall()
+
+        cur.close()
+
+        return rows
+
+    except Exception as error:
+
+        print(
+            "GET MEMORY ERROR:",
+            type(error).__name__,
+            str(error)
+        )
+
+        return []
+
+    finally:
+
+        if conn:
+
+            conn.close()
+
+
+# ============================================================
+# DELETE MEMORY
+# ============================================================
+
+def delete_memories(
+    user_id: str
+):
+
+    if not DATABASE_URL:
+
+        return
+
+    conn = None
+
+    try:
+
+        conn = get_db()
+
+        cur = conn.cursor()
+
+        cur.execute("""
+            DELETE FROM memories
+
+            WHERE user_id = %s
+        """, (
+            user_id,
+        ))
+
+        conn.commit()
+
+        cur.close()
+
+    except Exception as error:
+
+        print(
+            "DELETE MEMORY ERROR:",
+            type(error).__name__,
+            str(error)
+        )
+
+    finally:
+
+        if conn:
+
+            conn.close()
+
+
+# ============================================================
+# CLEAN MEMORY VALUE
+# ============================================================
+
+def clean_captured_value(
+    value: str
+) -> str:
+
+    value = str(
+        value or ""
+    ).strip()
+
+    value = re.split(
+        r"[.!?।]\s+",
+        value,
+        maxsplit=1
+    )[0]
+
+    value = re.sub(
+        r"\s+(?:है|हैं|हूँ|हूं|hai|hain|ho)$",
+        "",
+        value,
+        flags=re.IGNORECASE
+    )
+
+    return value.strip(
+        " \t\n\r.,;:!?।"
+    )
+
+
+# ============================================================
+# EXTRACT LONG-TERM MEMORY
+# ============================================================
+
+def extract_long_term_memories(
+    text: str
+):
+
+    text = str(
+        text or ""
+    ).strip()
+
+    if not text:
+
+        return []
+
+    found = []
+
+    patterns = [
+
+        # ----------------------------------------------------
+        # NAME
+        # ----------------------------------------------------
+
+        (
+            "name",
+            [
+                r"\bmy\s+name\s+is\s+(.{2,100})",
+                r"\bmera\s+naam\s+(.{2,100})",
+                r"\bmera\s+naam\s+hai\s+(.{2,100})",
+                r"\bमेरा\s+नाम\s+(.{2,100})",
+                r"\bमेरा\s+नाम\s+है\s+(.{2,100})",
+            ]
+        ),
+        
