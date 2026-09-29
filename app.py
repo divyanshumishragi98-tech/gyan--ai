@@ -1290,12 +1290,15 @@ def format_history_for_model(
 # GEMINI
 # ============================================================
 
+# ============================================================
+# GEMINI
+# ============================================================
+
 def call_gemini(
     prompt: str
 ):
-
     if not gemini_client:
-
+        print("GEMINI: client not available")
         return None
 
     try:
@@ -1316,8 +1319,9 @@ def call_gemini(
         )
 
         if text:
-
             return text.strip()
+
+        print("GEMINI: empty response")
 
     except Exception as error:
 
