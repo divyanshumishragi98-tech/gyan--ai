@@ -1,8 +1,3 @@
-# ============================================================
-#                 GYAN AI V13.2
-#        LONG-TERM MEMORY + CHAT HISTORY ENGINE
-# ============================================================
-
 import os
 import time
 import json
@@ -19,7 +14,8 @@ from google import genai
 
 
 # ============================================================
-# CONFIG
+#                 GYAN AI V13.3
+#      POSTGRESQL + LONG-TERM MEMORY + CHAT HISTORY
 # ============================================================
 
 APP_TITLE = "Gyan AI"
@@ -27,6 +23,11 @@ APP_TITLE = "Gyan AI"
 DATABASE_URL = os.environ.get("DATABASE_URL")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
+
+GEMINI_MODEL = os.environ.get(
+    "GEMINI_MODEL",
+    "gemini-3.6-flash"
+)
 
 gemini_client = (
     genai.Client(api_key=GEMINI_API_KEY)
@@ -65,7 +66,6 @@ def get_db():
 # ============================================================
 
 def init_database():
-
     if not DATABASE_URL:
         print("WARNING: DATABASE_URL is not configured.")
         return
@@ -88,7 +88,7 @@ def init_database():
             CREATE TABLE IF NOT EXISTS conversations (
                 id TEXT PRIMARY KEY,
                 user_id TEXT NOT NULL,
-                title TEXT DEFAULT 'New Chat',
+                title TEXT NOT NULL DEFAULT 'New Chat',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -118,30 +118,31 @@ def init_database():
         """)
 
         cur.execute("""
-            CREATE INDEX IF NOT EXISTS idx_messages_user
-            ON messages(user_id)
+            CREATE INDEX IF NOT EXISTS idx_conversations_user_updated
+            ON conversations(user_id, updated_at DESC)
         """)
 
         cur.execute("""
-            CREATE INDEX IF NOT EXISTS idx_messages_conversation
-            ON messages(conversation_id)
+            CREATE INDEX IF NOT EXISTS idx_messages_conversation_id
+            ON messages(conversation_id, id)
         """)
 
         cur.execute("""
-            CREATE INDEX IF NOT EXISTS idx_conversations_user
-            ON conversations(user_id)
+            CREATE INDEX IF NOT EXISTS idx_messages_user_id
+            ON messages(user_id, id)
         """)
 
         cur.execute("""
-            CREATE INDEX IF NOT EXISTS idx_memories_user
-            ON memories(user_id)
+            CREATE INDEX IF NOT EXISTS idx_memories_user_updated
+            ON memories(user_id, updated_at DESC)
         """)
 
         conn.commit()
         cur.close()
 
         print("============================================================")
-        print("GYAN AI DATABASE READY")
+        print("             GYAN AI DATABASE READY")
+        print("============================================================")
         print("PostgreSQL connected successfully.")
         print("============================================================")
 
@@ -162,8 +163,7 @@ def init_database():
 # ============================================================
 
 def ensure_user(user_id):
-
-    if not user_id:
+    if not user_id or not isinstance(user_id, str):
         user_id = str(uuid.uuid4())
 
     if not DATABASE_URL:
@@ -200,14 +200,13 @@ def ensure_user(user_id):
 
 
 # ============================================================
-# CREATE CONVERSATION
+# CONVERSATION MANAGEMENT
 # ============================================================
 
 def create_conversation(
     user_id,
     title="New Chat"
 ):
-
     conversation_id = str(uuid.uuid4())
 
     if not DATABASE_URL:
@@ -226,7 +225,7 @@ def create_conversation(
         """, (
             conversation_id,
             user_id,
-            title[:100]
+            (title or "New Chat").strip()[:100]
         ))
 
         conn.commit()
@@ -246,17 +245,12 @@ def create_conversation(
     return conversation_id
 
 
-# ============================================================
-# UPDATE CONVERSATION TITLE
-# ============================================================
-
 def update_conversation_title(
     conversation_id,
     user_id,
     title
 ):
-
-    if not DATABASE_URL:
+    if not DATABASE_URL or not conversation_id:
         return
 
     conn = None
@@ -272,7 +266,7 @@ def update_conversation_title(
             WHERE id = %s
               AND user_id = %s
         """, (
-            title[:100],
+            (title or "New Chat").strip()[:100],
             conversation_id,
             user_id
         ))
@@ -292,6 +286,57 @@ def update_conversation_title(
             conn.close()
 
 
+def get_user_conversations(
+    user_id,
+    limit=100
+):
+    if not DATABASE_URL:
+        return []
+
+    conn = None
+
+    try:
+        conn = get_db()
+
+        cur = conn.cursor(
+            cursor_factory=RealDictCursor
+        )
+
+        cur.execute("""
+            SELECT
+                id,
+                title,
+                created_at,
+                updated_at
+            FROM conversations
+            WHERE user_id = %s
+            ORDER BY updated_at DESC
+            LIMIT %s
+        """, (
+            user_id,
+            limit
+        ))
+
+        rows = cur.fetchall()
+
+        cur.close()
+
+        return rows
+
+    except Exception as error:
+        print(
+            "LOAD HISTORY ERROR:",
+            type(error).__name__,
+            str(error)
+        )
+
+        return []
+
+    finally:
+        if conn:
+            conn.close()
+
+
 # ============================================================
 # SAVE MESSAGE
 # ============================================================
@@ -302,14 +347,12 @@ def save_message(
     role,
     content
 ):
-
-    if not DATABASE_URL:
+    if not DATABASE_URL or not conversation_id:
         return
 
-    if not content:
-        return
-
-    content = str(content).strip()
+    content = str(
+        content or ""
+    ).strip()
 
     if not content:
         return
@@ -322,7 +365,12 @@ def save_message(
 
         cur.execute("""
             INSERT INTO messages
-            (user_id, conversation_id, role, content)
+            (
+                user_id,
+                conversation_id,
+                role,
+                content
+            )
             VALUES (%s, %s, %s, %s)
         """, (
             user_id,
@@ -357,7 +405,7 @@ def save_message(
 
 
 # ============================================================
-# GET CURRENT CONVERSATION
+# GET CHAT MESSAGES
 # ============================================================
 
 def get_conversation_messages(
@@ -365,11 +413,7 @@ def get_conversation_messages(
     conversation_id,
     limit=80
 ):
-
-    if not DATABASE_URL:
-        return []
-
-    if not conversation_id:
+    if not DATABASE_URL or not conversation_id:
         return []
 
     conn = None
@@ -382,7 +426,10 @@ def get_conversation_messages(
         )
 
         cur.execute("""
-            SELECT role, content
+            SELECT
+                id,
+                role,
+                content
             FROM (
                 SELECT
                     id,
@@ -428,67 +475,16 @@ def get_conversation_messages(
 
 
 # ============================================================
-# GET ALL USER CONVERSATIONS
-# ============================================================
-
-def get_user_conversations(user_id):
-
-    if not DATABASE_URL:
-        return []
-
-    conn = None
-
-    try:
-        conn = get_db()
-
-        cur = conn.cursor(
-            cursor_factory=RealDictCursor
-        )
-
-        cur.execute("""
-            SELECT
-                id,
-                title,
-                created_at,
-                updated_at
-            FROM conversations
-            WHERE user_id = %s
-            ORDER BY updated_at DESC
-            LIMIT 100
-        """, (user_id,))
-
-        rows = cur.fetchall()
-
-        cur.close()
-
-        return rows
-
-    except Exception as error:
-        print(
-            "LOAD HISTORY ERROR:",
-            type(error).__name__,
-            str(error)
-        )
-
-        return []
-
-    finally:
-        if conn:
-            conn.close()
-
-
-# ============================================================
 # SEARCH WORDS
 # ============================================================
 
 def extract_search_words(text):
-
     if not text:
         return []
 
     words = re.findall(
         r"[A-Za-z0-9\u0900-\u097F]+",
-        text.lower()
+        str(text).lower()
     )
 
     stop_words = {
@@ -534,6 +530,8 @@ def extract_search_words(text):
         "hoga",
         "kya",
         "kaise",
+        "kyon",
+        "kyun",
         "mujhe",
         "mera",
         "meri",
@@ -544,7 +542,7 @@ def extract_search_words(text):
         "ka",
         "ko",
         "se",
-        "me",
+        "mein",
         "और",
         "या",
         "है",
@@ -557,7 +555,6 @@ def extract_search_words(text):
         "कैसे",
         "क्यों",
         "अब",
-        "वो",
         "यह",
         "इस",
         "के",
@@ -571,12 +568,10 @@ def extract_search_words(text):
     result = []
 
     for word in words:
-
         if (
             len(word) >= 3
             and word not in stop_words
         ):
-
             if word not in result:
                 result.append(word)
 
@@ -593,7 +588,6 @@ def search_relevant_old_messages(
     query,
     limit=15
 ):
-
     if not DATABASE_URL:
         return []
 
@@ -614,19 +608,19 @@ def search_relevant_old_messages(
         )
 
         conditions = []
+
         params = [
             user_id,
             current_conversation_id
         ]
 
-        for word in keywords:
-
+        for keyword in keywords:
             conditions.append(
                 "LOWER(content) LIKE %s"
             )
 
             params.append(
-                "%" + word + "%"
+                "%" + keyword + "%"
             )
 
         sql = f"""
@@ -659,7 +653,6 @@ def search_relevant_old_messages(
         return rows
 
     except Exception as error:
-
         print(
             "OLD MESSAGE SEARCH ERROR:",
             type(error).__name__,
@@ -681,7 +674,6 @@ def deterministic_key(
     prefix,
     value
 ):
-
     digest = hashlib.sha256(
         value.strip()
         .lower()
@@ -700,15 +692,11 @@ def save_memory(
     memory_key,
     memory_value
 ):
-
     if not DATABASE_URL:
         return
 
-    if not memory_value:
-        return
-
     memory_value = str(
-        memory_value
+        memory_value or ""
     ).strip()
 
     if not memory_value:
@@ -717,9 +705,7 @@ def save_memory(
     conn = None
 
     try:
-
         conn = get_db()
-
         cur = conn.cursor()
 
         cur.execute("""
@@ -747,11 +733,9 @@ def save_memory(
         ))
 
         conn.commit()
-
         cur.close()
 
     except Exception as error:
-
         print(
             "SAVE MEMORY ERROR:",
             type(error).__name__,
@@ -759,7 +743,6 @@ def save_memory(
         )
 
     finally:
-
         if conn:
             conn.close()
 
@@ -772,14 +755,12 @@ def get_memories(
     user_id,
     limit=50
 ):
-
     if not DATABASE_URL:
         return []
 
     conn = None
 
     try:
-
         conn = get_db()
 
         cur = conn.cursor(
@@ -806,7 +787,6 @@ def get_memories(
         return rows
 
     except Exception as error:
-
         print(
             "GET MEMORY ERROR:",
             type(error).__name__,
@@ -816,7 +796,6 @@ def get_memories(
         return []
 
     finally:
-
         if conn:
             conn.close()
 
@@ -825,15 +804,15 @@ def get_memories(
 # DELETE MEMORY
 # ============================================================
 
-def delete_memories(user_id):
-
+def delete_memories(
+    user_id
+):
     if not DATABASE_URL:
         return
 
     conn = None
 
     try:
-
         conn = get_db()
 
         cur = conn.cursor()
@@ -850,7 +829,6 @@ def delete_memories(user_id):
         cur.close()
 
     except Exception as error:
-
         print(
             "DELETE MEMORY ERROR:",
             type(error).__name__,
@@ -858,40 +836,67 @@ def delete_memories(user_id):
         )
 
     finally:
-
         if conn:
             conn.close()
 
 
 # ============================================================
-# EXTRACT LONG-TERM MEMORY
+# CLEAN MEMORY TEXT
+# ============================================================
+
+def clean_captured_value(
+    value
+):
+    value = str(
+        value or ""
+    ).strip()
+
+    value = re.split(
+        r"[।!?]\s+",
+        value,
+        maxsplit=1
+    )[0]
+
+    value = re.sub(
+        r"\s+(?:है|हैं|हूँ|हूं|hai|hain|ho)$",
+        "",
+        value,
+        flags=re.IGNORECASE
+    )
+
+    value = value.strip(
+        " \t\n\r.,;:!?।"
+    )
+
+    return value
+
+
+# ============================================================
+# EXTRACT LONG-TERM MEMORIES
 # ============================================================
 
 def extract_memories(
     user_id,
     message
 ):
-
     if not message:
         return
 
-    text = message.strip()
+    text = str(
+        message
+    ).strip()
 
     # --------------------------------------------------------
     # NAME
     # --------------------------------------------------------
 
     name_patterns = [
-
-        r"मेरा नाम\s+([A-Za-z\u0900-\u097F][A-Za-z\u0900-\u097F .'-]{1,50})",
-
-        r"मेरा नाम है\s+([A-Za-z\u0900-\u097F][A-Za-z\u0900-\u097F .'-]{1,50})",
-
-        r"my name is\s+([A-Za-z][A-Za-z .'-]{1,50})",
-
-        r"my name's\s+([A-Za-z][A-Za-z .'-]{1,50})",
-
-        r"mera naam\s+([A-Za-z\u0900-\u097F][A-Za-z\u0900-\u097F .'-]{1,50})"
+        r"मेरा\s+नाम\s+है\s+([A-Za-z\u0900-\u097F][A-Za-z\u0900-\u097F .'-]{1,60})",
+        r"मेरा\s+नाम\s+([A-Za-z\u0900-\u097F][A-Za-z\u0900-\u097F .'-]{1,60})",
+        r"my\s+name\s+is\s+([A-Za-z][A-Za-z .'-]{1,60})",
+        r"my\s+name's\s+([A-Za-z][A-Za-z .'-]{1,60})",
+        r"mera\s+naam\s+hai\s+([A-Za-z\u0900-\u097F][A-Za-z\u0900-\u097F .'-]{1,60})",
+        r"mera\s+naam\s+([A-Za-z\u0900-\u097F][A-Za-z\u0900-\u097F .'-]{1,60})"
     ]
 
     for pattern in name_patterns:
@@ -899,24 +904,16 @@ def extract_memories(
         match = re.search(
             pattern,
             text,
-            re.IGNORECASE
+            flags=re.IGNORECASE
         )
 
         if match:
 
-            name = match.group(1).strip()
+            name = clean_captured_value(
+                match.group(1)
+            )
 
-            name = re.sub(
-                r"\s+(hai|है|हूँ|ho|is)$",
-                "",
-                name,
-                flags=re.IGNORECASE
-            ).strip()
-
-            if (
-                len(name) > 1
-                and len(name) <= 60
-            ):
+            if 2 <= len(name) <= 60:
 
                 save_memory(
                     user_id,
@@ -936,16 +933,12 @@ def extract_memories(
     # --------------------------------------------------------
 
     age_patterns = [
-
-        r"\bmeri age\s+(\d{1,3})",
-
-        r"\bmeri umar\s+(\d{1,3})",
-
-        r"\bmy age is\s+(\d{1,3})",
-
-        r"\bI am\s+(\d{1,3})\s*(?:years old|year old|saal ka|saal ki)?",
-
-        r"\bमैं\s+(\d{1,3})\s*(?:साल|वर्ष)?\s*(?:का|की)?\s*हूँ"
+        r"मेरी\s+उम्र\s+(\d{1,3})",
+        r"मेरी\s+एज\s+(\d{1,3})",
+        r"my\s+age\s+is\s+(\d{1,3})",
+        r"meri\s+umar\s+(\d{1,3})",
+        r"meri\s+age\s+(\d{1,3})",
+        r"\bI\s+am\s+(\d{1,3})\s*(?:years?\s*old)?"
     ]
 
     for pattern in age_patterns:
@@ -953,47 +946,26 @@ def extract_memories(
         match = re.search(
             pattern,
             text,
-            re.IGNORECASE
+            flags=re.IGNORECASE
         )
 
         if match:
 
             try:
 
-                age_number = int(
+                age = int(
                     match.group(1)
                 )
 
-                if 5 <= age_number <= 120:
+                if 5 <= age <= 120:
 
                     save_memory(
                         user_id,
                         "profile:age",
-                        str(age_number)
+                        str(age)
                     )
 
                     print(
                         "Memory saved: age =",
-                        age_number
-                    )
-
-                    break
-
-            except Exception:
-                pass
-
-    # --------------------------------------------------------
-    # INTEREST
-    # --------------------------------------------------------
-
-    interest_patterns = [
-
-        r"मुझे\s+(.{2,100}?)\s+पसंद\s+है",
-
-        r"मुझे\s+(.{2,100}?)\s+पसंद\s+हैं",
-
-        r"mujhe\s+(.{2,100}?)\s+pasand\s+hai",
-
-        r"i\s+like\s+(.{2,100})",
-
-        r"i\s+love\s+(.{2,100
+                        age
+  
