@@ -2099,7 +2099,7 @@ def build_app():
 
         with gr.Row():
 
-            # =================================================
+                    # =================================================
             # CHAT
             # =================================================
 
@@ -2128,4 +2128,348 @@ def build_app():
                 message = gr.Textbox(
 
                     placeholder=(
+                        "Type your message…"
+                    ),
+
+                    show_label=False,
+
+                    lines=2,
+
+                    max_lines=8,
+
+                    autofocus=True
+                )
+
+                with gr.Row():
+
+                    send = gr.Button(
+                        "Send",
+                        variant="primary"
+                    )
+
+                    new = gr.Button(
+                        "New Chat"
+                    )
+
+            # =================================================
+            # SIDEBAR
+            # =================================================
+
+            with gr.Column(
+                scale=2,
+                min_width=220
+            ):
+
+                gr.Markdown(
+                    "### Chat History"
+                )
+
+                history_dropdown = (
+                    gr.Dropdown(
+                        choices=[],
+                        label="Conversations",
+                        interactive=True
+                    )
+                )
+
+                refresh_history = (
+                    gr.Button(
+                        "Refresh History"
+                    )
+                )
+
+                gr.Markdown(
+                    "### Memory"
+                )
+
+                memory_box = gr.Markdown(
+                    "### Long-term Memory\n\n"
+                    "No memories loaded."
+                )
+
+                refresh_memory = (
+                    gr.Button(
+                        "Refresh Memory"
+                    )
+                )
+
+                clear_memory_btn = (
+                    gr.Button(
+                        "Clear Memory"
+                    )
+                )
+
+                gr.Markdown(
+                    "### Save a Memory"
+                )
+
+                manual_memory_text = (
+                    gr.Textbox(
+                        label="Memory",
+                        placeholder=(
+                            "Example: "
+                            "मुझे science पसंद है"
+                        ),
+                        lines=2
+                    )
+                )
+
+                save_memory_btn = (
+                    gr.Button(
+                        "Save Memory"
+                    )
+                )
+
+        # ====================================================
+        # SUBMIT CONFIG
+        # ====================================================
+
+        submit_inputs = [
+
+            message,
+            chatbot,
+            user_id,
+            conversation_id
+        ]
+
+        submit_outputs = [
+
+            message,
+            chatbot,
+            user_id,
+            conversation_id,
+            memory_box
+        ]
+
+        # ====================================================
+        # SEND
+        # ====================================================
+
+        send.click(
+
+            chat_submit,
+
+            inputs=submit_inputs,
+
+            outputs=submit_outputs
+        )
+
+        # ====================================================
+        # ENTER
+        # ====================================================
+
+        message.submit(
+
+            chat_submit,
+
+            inputs=submit_inputs,
+
+            outputs=submit_outputs
+        )
+
+        # ====================================================
+        # NEW CHAT
+        # ====================================================
+
+        new.click(
+
+            new_chat,
+
+            inputs=[
+                user_id
+            ],
+
+            outputs=[
+                chatbot,
+                user_id,
+                conversation_id
+            ]
+
+        ).then(
+
+            load_history,
+
+            inputs=[
+                user_id
+            ],
+
+            outputs=[
+                history_dropdown
+            ]
+
+        ).then(
+
+            memory_view,
+
+            inputs=[
+                user_id
+            ],
+
+            outputs=[
+                memory_box
+            ]
+        )
+
+        # ====================================================
+        # REFRESH HISTORY
+        # ====================================================
+
+        refresh_history.click(
+
+            load_history,
+
+            inputs=[
+                user_id
+            ],
+
+            outputs=[
+                history_dropdown
+            ]
+        )
+
+        # ====================================================
+        # SELECT HISTORY
+        # ====================================================
+
+        history_dropdown.change(
+
+            load_conversation,
+
+            inputs=[
+                history_dropdown,
+                user_id
+            ],
+
+            outputs=[
+                chatbot
+            ]
+
+        ).then(
+
+            lambda cid: cid,
+
+            inputs=[
+                history_dropdown
+            ],
+
+            outputs=[
+                conversation_id
+            ]
+        )
+
+        # ====================================================
+        # REFRESH MEMORY
+        # ====================================================
+
+        refresh_memory.click(
+
+            memory_view,
+
+            inputs=[
+                user_id
+            ],
+
+            outputs=[
+                memory_box
+            ]
+        )
+
+        # ====================================================
+        # CLEAR MEMORY
+        # ====================================================
+
+        clear_memory_btn.click(
+
+            clear_memory,
+
+            inputs=[
+                user_id
+            ],
+
+            outputs=[
+                memory_box
+            ]
+        )
+
+        # ====================================================
+        # SAVE MANUAL MEMORY
+        # ====================================================
+
+        save_memory_btn.click(
+
+            manual_memory,
+
+            inputs=[
+                manual_memory_text,
+                user_id
+            ],
+
+            outputs=[
+                memory_box
+            ]
+
+        ).then(
+
+            lambda: "",
+
+            outputs=[
+                manual_memory_text
+            ]
+        )
+
+        # ====================================================
+        # PAGE LOAD
+        # ====================================================
+
+        demo.load(
+
+            load_history,
+
+            inputs=[
+                user_id
+            ],
+
+            outputs=[
+                history_dropdown
+            ]
+
+        ).then(
+
+            memory_view,
+
+            inputs=[
+                user_id
+            ],
+
+            outputs=[
+                memory_box
+            ]
+        )
+
+    return demo
+
+
+# ============================================================
+# START SERVER
+# ============================================================
+
+if __name__ == "__main__":
+
+    app = build_app()
+
+    port = int(
+        os.environ.get(
+            "PORT",
+            "7860"
+        )
+    )
+
+    app.launch(
+
+        server_name="0.0.0.0",
+
+        server_port=port,
+
+        show_error=True
+        )
       
