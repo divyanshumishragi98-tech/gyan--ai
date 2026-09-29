@@ -61,3 +61,103 @@ gemini_client = (
     if GEMINI_API_KEY
     else None
 )
+# ============================================================
+# DATABASE CONNECTION
+# ============================================================
+
+def get_db():
+
+    if not DATABASE_URL:
+
+        raise RuntimeError(
+            "DATABASE_URL is not configured."
+        )
+
+    return psycopg2.connect(
+        DATABASE_URL,
+        connect_timeout=10
+    )
+
+
+# ============================================================
+# DATABASE INITIALIZATION
+# ============================================================
+
+def init_database():
+
+    if not DATABASE_URL:
+
+        print(
+            "WARNING: DATABASE_URL is not configured."
+        )
+
+        return
+
+    conn = None
+
+    try:
+
+        conn = get_db()
+
+        cur = conn.cursor()
+
+        # ----------------------------------------------------
+        # USERS
+        # ----------------------------------------------------
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS gyan_users (
+
+                id TEXT PRIMARY KEY,
+
+                created_at
+                    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+                updated_at
+                    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # ----------------------------------------------------
+        # CONVERSATIONS
+        # ----------------------------------------------------
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS conversations (
+
+                id TEXT PRIMARY KEY,
+
+                user_id TEXT NOT NULL,
+
+                title TEXT NOT NULL
+                    DEFAULT 'New Chat',
+
+                created_at
+                    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+                updated_at
+                    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # ----------------------------------------------------
+        # MESSAGES
+        # ----------------------------------------------------
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS messages (
+
+                id BIGSERIAL PRIMARY KEY,
+
+                user_id TEXT NOT NULL,
+
+                conversation_id TEXT NOT NULL,
+
+                role TEXT NOT NULL,
+
+                content TEXT NOT NULL,
+
+                created_at
+                    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
