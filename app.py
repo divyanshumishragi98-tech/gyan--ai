@@ -1068,3 +1068,1064 @@ def extract_long_term_memories(
             ]
         ),
         
+       # ----------------------------------------------------
+        # LIKE / LOVE
+        # ----------------------------------------------------
+
+        (
+            "like",
+            [
+                r"\bi\s+love\s+(.{2,100})",
+                r"\bi\s+like\s+(.{2,100})",
+                r"\bi\s+prefer\s+(.{2,100})",
+                r"\bmujhe\s+(.{2,100})\s+pasand\s+hai",
+                r"\bmujhe\s+(.{2,100})\s+pasand\s+है",
+            ]
+        ),
+
+        # ----------------------------------------------------
+        # SCHOOL
+        # ----------------------------------------------------
+
+        (
+            "school",
+            [
+                r"\bi\s+study\s+at\s+(.{2,100})",
+                r"\bi\s+study\s+in\s+(.{2,100})",
+                r"\bmy\s+school\s+is\s+(.{2,100})",
+                r"\bmeri\s+school\s+(.{2,100})",
+            ]
+        ),
+
+        # ----------------------------------------------------
+        # CITY
+        # ----------------------------------------------------
+
+        (
+            "city",
+            [
+                r"\bi\s+live\s+in\s+(.{2,100})",
+                r"\bi\s+am\s+from\s+(.{2,100})",
+                r"\bmera\s+city\s+(.{2,100})",
+                r"\bmain\s+(.{2,100})\s+mein\s+rehta\s+hoon",
+                r"\bमैं\s+(.{2,100})\s+में\s+रहता\s+हूँ",
+            ]
+        ),
+    ]
+
+    for key, regexes in patterns:
+
+        for pattern in regexes:
+
+            match = re.search(
+                pattern,
+                text,
+                flags=re.IGNORECASE
+            )
+
+            if not match:
+
+                continue
+
+            value = clean_captured_value(
+                match.group(1)
+            )
+
+            if value:
+
+                found.append(
+                    (
+                        deterministic_key(
+                            key,
+                            key
+                        ),
+                        value
+                    )
+                )
+
+            break
+
+    # --------------------------------------------------------
+    # FAVORITE
+    # --------------------------------------------------------
+
+    favorite = re.search(
+        r"\bmy\s+(?:favorite|favourite)\s+(.{2,60}?)"
+        r"\s+is\s+(.{2,100})",
+        text,
+        flags=re.IGNORECASE
+    )
+
+    if favorite:
+
+        category = clean_captured_value(
+            favorite.group(1)
+        )
+
+        value = clean_captured_value(
+            favorite.group(2)
+        )
+
+        if category and value:
+
+            found.append(
+                (
+                    deterministic_key(
+                        "favorite",
+                        category
+                    ),
+                    f"{category}: {value}"
+                )
+            )
+
+    # --------------------------------------------------------
+    # EXPLICIT MEMORY REQUEST
+    # --------------------------------------------------------
+
+    explicit = re.search(
+        r"(?:remember|yaad\s+rakhna|याद\s+रखना)"
+        r"\s+(?:that\s+|कि\s+)?(.{2,200})",
+        text,
+        flags=re.IGNORECASE
+    )
+
+    if explicit:
+
+        value = clean_captured_value(
+            explicit.group(1)
+        )
+
+        if value:
+
+            found.append(
+                (
+                    deterministic_key(
+                        "fact",
+                        value
+                    ),
+                    value
+                )
+            )
+
+    # --------------------------------------------------------
+    # REMOVE DUPLICATES
+    # --------------------------------------------------------
+
+    unique = []
+
+    seen = set()
+
+    for item in found:
+
+        if item[0] not in seen:
+
+            seen.add(
+                item[0]
+            )
+
+            unique.append(
+                item
+            )
+
+    return unique[:10]
+
+
+# ============================================================
+# FORMAT HISTORY FOR MODEL
+# ============================================================
+
+def format_history_for_model(
+    messages,
+    max_chars: int = 18000
+):
+
+    cleaned = []
+
+    total = 0
+
+    for item in (
+        messages or []
+    )[-60:]:
+
+        role = item.get(
+            "role",
+            "user"
+        )
+
+        content = str(
+            item.get(
+                "content",
+                ""
+            )
+        ).strip()
+
+        if not content:
+
+            continue
+
+        line = (
+            f"{role.upper()}: "
+            f"{content}"
+        )
+
+        if (
+            total + len(line)
+            > max_chars
+        ):
+
+            break
+
+        cleaned.append(
+            line
+        )
+
+        total += len(line)
+
+    return "\n".join(
+        cleaned
+    )
+
+
+# ============================================================
+# GEMINI
+# ============================================================
+
+def call_gemini(
+    prompt: str
+):
+
+    if not gemini_client:
+
+        return None
+
+    try:
+
+        response = (
+            gemini_client
+            .models
+            .generate_content(
+                model=GEMINI_MODEL,
+                contents=prompt
+            )
+        )
+
+        text = getattr(
+            response,
+            "text",
+            None
+        )
+
+        if text:
+
+            return text.strip()
+
+    except Exception as error:
+
+        print(
+            "GEMINI ERROR:",
+            type(error).__name__,
+            str(error)
+        )
+
+    return None
+
+
+# ============================================================
+# OPENROUTER
+# ============================================================
+
+def call_openrouter(
+    prompt: str,
+    model: Optional[str] = None
+):
+
+    if not OPENROUTER_API_KEY:
+
+        return None
+
+    selected_model = (
+        model
+        or OPENROUTER_MODEL
+    )
+
+    payload = {
+
+        "model":
+            selected_model,
+
+        "messages": [
+
+            {
+                "role": "system",
+
+                "content": (
+                    "You are Gyan AI, "
+                    "a helpful AI assistant. "
+                    "Answer accurately and clearly. "
+                    "Use the user's language "
+                    "when practical."
+                )
+            },
+
+            {
+                "role": "user",
+
+                "content": prompt
+            }
+        ],
+
+        "temperature": 0.4
+    }
+
+    request = urllib.request.Request(
+
+        "https://openrouter.ai/api/v1/chat/completions",
+
+        data=json.dumps(
+            payload
+        ).encode(
+            "utf-8"
+        ),
+
+        headers={
+
+            "Authorization":
+                f"Bearer {OPENROUTER_API_KEY}",
+
+            "Content-Type":
+                "application/json",
+
+            "HTTP-Referer":
+                os.environ.get(
+                    "OPENROUTER_HTTP_REFERER",
+                    "https://gyan-ai-ef7h.onrender.com"
+                ),
+
+            "X-Title":
+                APP_TITLE
+        },
+
+        method="POST"
+    )
+
+    try:
+
+        with urllib.request.urlopen(
+            request,
+            timeout=90
+        ) as response:
+
+            result = json.loads(
+                response
+                .read()
+                .decode(
+                    "utf-8"
+                )
+            )
+
+        choices = (
+            result.get(
+                "choices"
+            )
+            or []
+        )
+
+        if not choices:
+
+            print(
+                "OPENROUTER: "
+                "no choices returned"
+            )
+
+            return None
+
+        message = (
+            choices[0]
+            .get("message")
+            or {}
+        )
+
+        content = message.get(
+            "content"
+        )
+
+        if isinstance(
+            content,
+            list
+        ):
+
+            content = "".join(
+
+                part.get(
+                    "text",
+                    ""
+                )
+
+                if isinstance(
+                    part,
+                    dict
+                )
+
+                else str(part)
+
+                for part in content
+            )
+
+        if content:
+
+            return str(
+                content
+            ).strip()
+
+    except urllib.error.HTTPError as error:
+
+        try:
+
+            detail = (
+                error
+                .read()
+                .decode(
+                    "utf-8",
+                    errors="replace"
+                )
+            )
+
+        except Exception:
+
+            detail = str(
+                error
+            )
+
+        print(
+            "OPENROUTER HTTP ERROR:",
+            error.code,
+            detail[:1000]
+        )
+
+    except (
+        urllib.error.URLError,
+        TimeoutError
+    ) as error:
+
+        print(
+            "OPENROUTER NETWORK ERROR:",
+            type(error).__name__,
+            str(error)
+        )
+
+    except Exception as error:
+
+        print(
+            "OPENROUTER ERROR:",
+            type(error).__name__,
+            str(error)
+        )
+
+    return None
+
+
+# ============================================================
+# BUILD AI PROMPT
+# ============================================================
+
+def build_prompt(
+    user_text,
+    current_messages,
+    old_messages,
+    memories
+):
+
+    recent = format_history_for_model(
+        current_messages
+    )
+
+    old_context = "\n".join(
+
+        f"- {r['role']}: "
+        f"{r['content']}"
+
+        for r in old_messages[:12]
+
+    ) or "None"
+
+    mem_context = "\n".join(
+
+        f"- {r['memory_value']}"
+
+        for r in memories[:30]
+
+    ) or "None"
+
+    return f"""
+You are Gyan AI.
+
+Rules:
+
+- Be helpful, accurate and natural.
+- Reply in Hindi/Hinglish when the user writes Hindi/Hinglish.
+- Otherwise use the user's language.
+- Use the supplied long-term memory and conversation history when relevant.
+- Do not claim to remember information that is not supplied.
+- Do not invent facts, API results, or actions.
+- If information is uncertain, say so.
+
+LONG-TERM MEMORY:
+
+{mem_context}
+
+
+CURRENT CONVERSATION:
+
+{recent or "None"}
+
+
+RELEVANT OLDER MESSAGES:
+
+{old_context}
+
+
+CURRENT USER MESSAGE:
+
+{user_text}
+""".strip()
+
+
+# ============================================================
+# GENERATE ANSWER
+# ============================================================
+
+def generate_answer(
+    user_text,
+    current_messages,
+    user_id,
+    conversation_id
+):
+
+    memories = get_memories(
+        user_id,
+        30
+    )
+
+    old_messages = (
+        search_relevant_old_messages(
+            user_id,
+            conversation_id,
+            user_text,
+            15
+        )
+    )
+
+    prompt = build_prompt(
+        user_text,
+        current_messages,
+        old_messages,
+        memories
+    )
+
+    # --------------------------------------------------------
+    # GEMINI FIRST
+    # --------------------------------------------------------
+
+    answer = call_gemini(
+        prompt
+    )
+
+    source = "Gemini"
+
+    # --------------------------------------------------------
+    # OPENROUTER FALLBACK
+    # --------------------------------------------------------
+
+    if not answer:
+
+        answer = call_openrouter(
+            prompt
+        )
+
+        source = "OpenRouter"
+
+    # --------------------------------------------------------
+    # FINAL FALLBACK
+    # --------------------------------------------------------
+
+    if not answer:
+
+        answer = (
+            "अभी AI service से उत्तर नहीं मिल पाया। "
+            "कृपया थोड़ी देर बाद फिर कोशिश करें।"
+        )
+
+        source = "Fallback"
+
+    return (
+        answer,
+        source
+    )
+
+
+# ============================================================
+# CONVERSATION TITLE
+# ============================================================
+
+def title_from_message(
+    text: str
+) -> str:
+
+    text = re.sub(
+        r"\s+",
+        " ",
+        str(
+            text or ""
+        ).strip()
+    )
+
+    if not text:
+
+        return "New Chat"
+
+    if len(text) > 70:
+
+        return (
+            text[:70]
+            + "…"
+        )
+
+    return text
+
+
+# ============================================================
+# CHAT SUBMIT
+# ============================================================
+
+def chat_submit(
+    message,
+    history,
+    user_id,
+    conversation_id
+):
+
+    message = str(
+        message or ""
+    ).strip()
+
+    history = (
+        history
+        or []
+    )
+
+    user_id = ensure_user(
+        user_id
+    )
+
+    if not message:
+
+        return (
+            "",
+            history,
+            user_id,
+            conversation_id,
+            memory_view(user_id)
+        )
+
+    if not conversation_id:
+
+        conversation_id = (
+            create_conversation(
+                user_id,
+                title_from_message(
+                    message
+                )
+            )
+        )
+
+    # --------------------------------------------------------
+    # SAVE USER MESSAGE
+    # --------------------------------------------------------
+
+    save_message(
+        user_id,
+        conversation_id,
+        "user",
+        message
+    )
+
+    # --------------------------------------------------------
+    # EXTRACT MEMORY
+    # --------------------------------------------------------
+
+    extracted = (
+        extract_long_term_memories(
+            message
+        )
+    )
+
+    for key, value in extracted:
+
+        save_memory(
+            user_id,
+            key,
+            value
+        )
+
+    # --------------------------------------------------------
+    # GENERATE ANSWER
+    # --------------------------------------------------------
+
+    answer, source = (
+        generate_answer(
+            message,
+            history,
+            user_id,
+            conversation_id
+        )
+    )
+
+    # --------------------------------------------------------
+    # SAVE ASSISTANT MESSAGE
+    # --------------------------------------------------------
+
+    save_message(
+        user_id,
+        conversation_id,
+        "assistant",
+        answer
+    )
+
+    # --------------------------------------------------------
+    # UPDATE TITLE
+    # --------------------------------------------------------
+
+    if not history:
+
+        update_conversation_title(
+            conversation_id,
+            user_id,
+            title_from_message(
+                message
+            )
+        )
+
+    # --------------------------------------------------------
+    # UPDATE CHAT UI
+    # --------------------------------------------------------
+
+    new_history = history + [
+
+        {
+            "role": "user",
+            "content": message
+        },
+
+        {
+            "role": "assistant",
+            "content": answer
+        }
+    ]
+
+    return (
+        "",
+        new_history,
+        user_id,
+        conversation_id,
+        memory_view(user_id)
+    )
+
+
+# ============================================================
+# NEW CHAT
+# ============================================================
+
+def new_chat(
+    user_id
+):
+
+    user_id = ensure_user(
+        user_id
+    )
+
+    conversation_id = (
+        create_conversation(
+            user_id,
+            "New Chat"
+        )
+    )
+
+    return (
+        [],
+        user_id,
+        conversation_id
+    )
+
+
+# ============================================================
+# LOAD HISTORY
+# ============================================================
+
+def load_history(
+    user_id
+):
+
+    user_id = ensure_user(
+        user_id
+    )
+
+    rows = (
+        get_user_conversations(
+            user_id
+        )
+    )
+
+    choices = [
+
+        (
+            row["title"],
+            row["id"]
+        )
+
+        for row in rows
+    ]
+
+    return gr.update(
+        choices=choices,
+        value=(
+            choices[0][1]
+            if choices
+            else None
+        )
+    )
+
+
+# ============================================================
+# LOAD SELECTED CONVERSATION
+# ============================================================
+
+def load_conversation(
+    conversation_id,
+    user_id
+):
+
+    if not conversation_id:
+
+        return []
+
+    user_id = ensure_user(
+        user_id
+    )
+
+    return get_conversation_messages(
+        user_id,
+        conversation_id
+    )
+
+
+# ============================================================
+# MEMORY VIEW
+# ============================================================
+
+def memory_view(
+    user_id
+):
+
+    user_id = ensure_user(
+        user_id
+    )
+
+    rows = get_memories(
+        user_id,
+        100
+    )
+
+    if not rows:
+
+        return (
+            "### Long-term Memory\n\n"
+            "No memories saved yet."
+        )
+
+    lines = [
+        "### Long-term Memory",
+        ""
+    ]
+
+    for row in rows:
+
+        lines.append(
+            f"- {row['memory_value']}"
+        )
+
+    return "\n".join(
+        lines
+    )
+
+
+# ============================================================
+# CLEAR MEMORY
+# ============================================================
+
+def clear_memory(
+    user_id
+):
+
+    user_id = ensure_user(
+        user_id
+    )
+
+    delete_memories(
+        user_id
+    )
+
+    return (
+        "### Long-term Memory\n\n"
+        "Memory cleared successfully."
+    )
+
+
+# ============================================================
+# MANUAL MEMORY
+# ============================================================
+
+def manual_memory(
+    text,
+    user_id
+):
+
+    user_id = ensure_user(
+        user_id
+    )
+
+    text = str(
+        text or ""
+    ).strip()
+
+    if text:
+
+        save_memory(
+            user_id,
+            deterministic_key(
+                "manual",
+                text
+            ),
+            text
+        )
+
+    return memory_view(
+        user_id
+    )
+
+
+# ============================================================
+# CSS
+# ============================================================
+
+CSS = r"""
+body {
+    margin: 0;
+}
+
+.gyan-title {
+    text-align: center;
+    font-size: 30px;
+    font-weight: 800;
+    margin: 4px 0 0 0;
+}
+
+.gyan-subtitle {
+    text-align: center;
+    opacity: 0.72;
+    margin-bottom: 10px;
+}
+
+footer {
+    display: none !important;
+}
+
+#chatbot {
+    min-height: 65vh;
+}
+
+textarea {
+    border-radius: 14px !important;
+}
+"""
+
+
+# ============================================================
+# BUILD APPLICATION
+# ============================================================
+
+def build_app():
+
+    init_database()
+
+    with gr.Blocks(
+        title=APP_TITLE,
+        css=CSS,
+        theme=gr.themes.Soft()
+    ) as demo:
+
+        # ----------------------------------------------------
+        # STATES
+        # ----------------------------------------------------
+
+        user_id = gr.State(
+            str(
+                uuid.uuid4()
+            )
+        )
+
+        conversation_id = gr.State(
+            None
+        )
+
+        # ----------------------------------------------------
+        # HEADER
+        # ----------------------------------------------------
+
+        gr.HTML(
+            """
+            <div class="gyan-title">
+                🧠 Gyan AI
+            </div>
+
+            <div class="gyan-subtitle">
+                Your AI assistant with long-term memory
+            </div>
+            """
+        )
+
+        # ----------------------------------------------------
+        # MAIN LAYOUT
+        # ----------------------------------------------------
+
+        with gr.Row():
+
+            # =================================================
+            # CHAT
+            # =================================================
+
+            with gr.Column(
+                scale=5
+            ):
+
+                chatbot = gr.Chatbot(
+
+                    value=[],
+
+                    type="messages",
+
+                    elem_id="chatbot",
+
+                    height="65vh",
+
+                    show_label=False,
+
+                    placeholder=(
+                        "Start a conversation "
+                        "with Gyan AI…"
+                    )
+                )
+
+                message = gr.Textbox(
+
+                    placeholder=(
+      
