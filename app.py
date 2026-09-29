@@ -2108,22 +2108,12 @@ def build_app():
             ):
 
                 chatbot = gr.Chatbot(
-
-                    value=[],
-
-                    type="messages",
-
-                    elem_id="chatbot",
-
-                    height="65vh",
-
-                    show_label=False,
-
-                    placeholder=(
-                        "Start a conversation "
-                        "with Gyan AI…"
-                    )
-                )
+    value=[],
+    elem_id="chatbot",
+    height="65vh",
+    show_label=False,
+    placeholder="Start a conversation with Gyan AI…"
+)
 
                 message = gr.Textbox(
 
