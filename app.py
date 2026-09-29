@@ -1,70 +1,38 @@
+# ============================================================
+#                 GYAN AI V13.1
+#        LONG-TERM MEMORY + CHAT HISTORY ENGINE
+# ============================================================
+
 import os
 import time
 import json
 import re
 import uuid
+import hashlib
 import urllib.request
 import urllib.error
 
 import gradio as gr
-
+import psycopg2
+from psycopg2.extras import RealDictCursor
 from google import genai
 
-try:
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
-except ImportError:
-    psycopg2 = None
-    RealDictCursor = None
-
 
 # ============================================================
-#                  GYAN AI V13
-#        LONG-TERM MEMORY + CHAT HISTORY
+# CONFIG
 # ============================================================
 
-print("=" * 70)
-print("                 GYAN AI V13")
-print("       LONG-TERM MEMORY + CHAT HISTORY")
-print("=" * 70)
-
-
-# ============================================================
-# ENVIRONMENT VARIABLES
-# ============================================================
+APP_TITLE = "Gyan AI"
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
-
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 
-GEMINI_MODEL = os.environ.get(
-    "GEMINI_MODEL",
-    "gemini-3.6-flash"
+gemini_client = (
+    genai.Client(api_key=GEMINI_API_KEY)
+    if GEMINI_API_KEY
+    else None
 )
-
-
-# ============================================================
-# GEMINI CLIENT
-# ============================================================
-
-gemini_client = None
-
-if GEMINI_API_KEY:
-    try:
-        gemini_client = genai.Client(
-            api_key=GEMINI_API_KEY
-        )
-        print("Gemini client: READY")
-    except Exception as error:
-        print("Gemini client error:", type(error).__name__)
-else:
-    print("Gemini API key: NOT FOUND")
-
-
-# ============================================================
-# OPENROUTER MODELS
-# ============================================================
 
 OPENROUTER_MODELS = [
     "nex-agi/nex-n2.5-mini:free",
@@ -79,512 +47,685 @@ OPENROUTER_MODELS = [
 
 
 # ============================================================
-# DATABASE CONNECTION
+# DATABASE
 # ============================================================
 
 def get_db():
-    if psycopg2 is None:
-        raise RuntimeError(
-            "psycopg2-binary installed नहीं है। "
-            "requirements.txt में psycopg2-binary जोड़ें।"
-        )
-
     if not DATABASE_URL:
-        raise RuntimeError(
-            "DATABASE_URL Render Environment में नहीं मिला।"
-        )
+        raise RuntimeError("DATABASE_URL is not configured.")
 
     return psycopg2.connect(
         DATABASE_URL,
-        sslmode="require",
         connect_timeout=10
     )
 
 
-# ============================================================
-# DATABASE INITIALIZATION
-# ============================================================
-
 def init_database():
     if not DATABASE_URL:
-        print("WARNING: DATABASE_URL नहीं मिला।")
+        print("WARNING: DATABASE_URL is not configured.")
         return
 
-    if psycopg2 is None:
-        print("WARNING: psycopg2-binary नहीं मिला।")
-        return
+    conn = None
 
     try:
-        connection = get_db()
-        cursor = connection.cursor()
+        conn = get_db()
+        cur = conn.cursor()
 
-        cursor.execute("""
+        cur.execute("""
             CREATE TABLE IF NOT EXISTS gyan_users (
                 id TEXT PRIMARY KEY,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
         """)
 
-        cursor.execute("""
+        cur.execute("""
             CREATE TABLE IF NOT EXISTS conversations (
                 id TEXT PRIMARY KEY,
                 user_id TEXT NOT NULL,
-                title TEXT DEFAULT 'नई बातचीत',
+                title TEXT DEFAULT 'New Chat',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
+            )
         """)
 
-        cursor.execute("""
+        cur.execute("""
             CREATE TABLE IF NOT EXISTS messages (
-                id SERIAL PRIMARY KEY,
-                conversation_id TEXT NOT NULL,
+                id BIGSERIAL PRIMARY KEY,
                 user_id TEXT NOT NULL,
+                conversation_id TEXT NOT NULL,
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
+            )
         """)
 
-        cursor.execute("""
+        cur.execute("""
             CREATE TABLE IF NOT EXISTS memories (
-                id SERIAL PRIMARY KEY,
+                id BIGSERIAL PRIMARY KEY,
                 user_id TEXT NOT NULL,
                 memory_key TEXT NOT NULL,
                 memory_value TEXT NOT NULL,
-                source_text TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(user_id, memory_key)
-            );
+            )
         """)
 
-        cursor.execute("""
+        cur.execute("""
             CREATE INDEX IF NOT EXISTS idx_messages_user
-            ON messages(user_id);
+            ON messages(user_id)
         """)
 
-        cursor.execute("""
+        cur.execute("""
             CREATE INDEX IF NOT EXISTS idx_messages_conversation
-            ON messages(conversation_id);
+            ON messages(conversation_id)
         """)
 
-        cursor.execute("""
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_conversations_user
+            ON conversations(user_id)
+        """)
+
+        cur.execute("""
             CREATE INDEX IF NOT EXISTS idx_memories_user
-            ON memories(user_id);
+            ON memories(user_id)
         """)
 
-        connection.commit()
+        conn.commit()
+        cur.close()
 
-        cursor.close()
-        connection.close()
-
-        print("PostgreSQL database: READY")
+        print("============================================================")
+        print("GYAN AI DATABASE READY")
+        print("PostgreSQL connected successfully.")
+        print("============================================================")
 
     except Exception as error:
-        print(
-            "Database initialization error:",
-            type(error).__name__,
-            str(error)
-        )
+        print("DATABASE INIT ERROR:", type(error).__name__, str(error))
 
-
-init_database()
+    finally:
+        if conn:
+            conn.close()
 
 
 # ============================================================
-# USER MANAGEMENT
+# USER
 # ============================================================
 
 def ensure_user(user_id):
     if not user_id:
         user_id = str(uuid.uuid4())
 
-    connection = get_db()
-    cursor = connection.cursor()
+    if not DATABASE_URL:
+        return user_id
 
-    cursor.execute(
-        """
-        INSERT INTO gyan_users (id)
-        VALUES (%s)
-        ON CONFLICT (id)
-        DO UPDATE SET last_seen = CURRENT_TIMESTAMP
-        """,
-        (user_id,)
-    )
+    conn = None
 
-    connection.commit()
+    try:
+        conn = get_db()
+        cur = conn.cursor()
 
-    cursor.close()
-    connection.close()
+        cur.execute("""
+            INSERT INTO gyan_users (id)
+            VALUES (%s)
+            ON CONFLICT (id)
+            DO UPDATE SET updated_at = CURRENT_TIMESTAMP
+        """, (user_id,))
+
+        conn.commit()
+        cur.close()
+
+    except Exception as error:
+        print("USER DATABASE ERROR:", type(error).__name__, str(error))
+
+    finally:
+        if conn:
+            conn.close()
 
     return user_id
 
 
 # ============================================================
-# CONVERSATION MANAGEMENT
+# CONVERSATIONS
 # ============================================================
 
-def create_conversation(user_id, title="नई बातचीत"):
+def create_conversation(user_id, title="New Chat"):
     conversation_id = str(uuid.uuid4())
 
-    connection = get_db()
-    cursor = connection.cursor()
+    if not DATABASE_URL:
+        return conversation_id
 
-    cursor.execute(
-        """
-        INSERT INTO conversations
-        (id, user_id, title)
-        VALUES (%s, %s, %s)
-        """,
-        (
+    conn = None
+
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+
+        cur.execute("""
+            INSERT INTO conversations
+            (id, user_id, title)
+            VALUES (%s, %s, %s)
+        """, (
             conversation_id,
             user_id,
             title[:100]
-        )
-    )
+        ))
 
-    connection.commit()
+        conn.commit()
+        cur.close()
 
-    cursor.close()
-    connection.close()
+    except Exception as error:
+        print("CREATE CONVERSATION ERROR:", type(error).__name__, str(error))
+
+    finally:
+        if conn:
+            conn.close()
 
     return conversation_id
 
 
-def update_conversation_title(
-    conversation_id,
-    title
-):
-    if not title:
+def update_conversation_title(conversation_id, user_id, title):
+    if not DATABASE_URL:
         return
 
-    connection = get_db()
-    cursor = connection.cursor()
+    conn = None
 
-    cursor.execute(
-        """
-        UPDATE conversations
-        SET title = %s,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE id = %s
-        """,
-        (
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+
+        cur.execute("""
+            UPDATE conversations
+            SET title = %s,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+              AND user_id = %s
+        """, (
             title[:100],
-            conversation_id
+            conversation_id,
+            user_id
+        ))
+
+        conn.commit()
+        cur.close()
+
+    except Exception as error:
+        print(
+            "UPDATE CONVERSATION ERROR:",
+            type(error).__name__,
+            str(error)
         )
-    )
 
-    connection.commit()
-
-    cursor.close()
-    connection.close()
-
-
-def touch_conversation(conversation_id):
-    connection = get_db()
-    cursor = connection.cursor()
-
-    cursor.execute(
-        """
-        UPDATE conversations
-        SET updated_at = CURRENT_TIMESTAMP
-        WHERE id = %s
-        """,
-        (conversation_id,)
-    )
-
-    connection.commit()
-
-    cursor.close()
-    connection.close()
+    finally:
+        if conn:
+            conn.close()
 
 
 # ============================================================
 # SAVE MESSAGE
 # ============================================================
 
-def save_message(
-    conversation_id,
-    user_id,
-    role,
-    content
-):
-    if not content:
+def save_message(user_id, conversation_id, role, content):
+    if not DATABASE_URL:
         return
 
-    connection = get_db()
-    cursor = connection.cursor()
+    if not content or not str(content).strip():
+        return
 
-    cursor.execute(
-        """
-        INSERT INTO messages
-        (conversation_id, user_id, role, content)
-        VALUES (%s, %s, %s, %s)
-        """,
-        (
-            conversation_id,
+    conn = None
+
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+
+        cur.execute("""
+            INSERT INTO messages
+            (user_id, conversation_id, role, content)
+            VALUES (%s, %s, %s, %s)
+        """, (
             user_id,
+            conversation_id,
             role,
-            content
+            str(content).strip()
+        ))
+
+        cur.execute("""
+            UPDATE conversations
+            SET updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+              AND user_id = %s
+        """, (
+            conversation_id,
+            user_id
+        ))
+
+        conn.commit()
+        cur.close()
+
+    except Exception as error:
+        print(
+            "SAVE MESSAGE ERROR:",
+            type(error).__name__,
+            str(error)
         )
-    )
 
-    connection.commit()
-
-    cursor.close()
-    connection.close()
-
-    touch_conversation(conversation_id)
+    finally:
+        if conn:
+            conn.close()
 
 
 # ============================================================
-# GET CURRENT CONVERSATION
+# LOAD CURRENT CONVERSATION
 # ============================================================
 
 def get_conversation_messages(
-    conversation_id,
     user_id,
-    limit=100
+    conversation_id,
+    limit=80
 ):
-    connection = get_db()
+    if not DATABASE_URL:
+        return []
 
-    cursor = connection.cursor(
-        cursor_factory=RealDictCursor
-    )
+    conn = None
 
-    cursor.execute(
-        """
-        SELECT role, content
-        FROM messages
-        WHERE conversation_id = %s
-          AND user_id = %s
-        ORDER BY id ASC
-        LIMIT %s
-        """,
-        (
-            conversation_id,
+    try:
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        cur.execute("""
+            SELECT role, content
+            FROM (
+                SELECT id, role, content
+                FROM messages
+                WHERE user_id = %s
+                  AND conversation_id = %s
+                ORDER BY id DESC
+                LIMIT %s
+            ) AS recent
+            ORDER BY id ASC
+        """, (
             user_id,
+            conversation_id,
             limit
+        ))
+
+        rows = cur.fetchall()
+        cur.close()
+
+        return [
+            {
+                "role": row["role"],
+                "content": row["content"]
+            }
+            for row in rows
+        ]
+
+    except Exception as error:
+        print(
+            "LOAD CONVERSATION ERROR:",
+            type(error).__name__,
+            str(error)
         )
-    )
+        return []
 
-    rows = cursor.fetchall()
-
-    cursor.close()
-    connection.close()
-
-    return [
-        {
-            "role": row["role"],
-            "content": row["content"]
-        }
-        for row in rows
-    ]
+    finally:
+        if conn:
+            conn.close()
 
 
 # ============================================================
-# GET ALL CONVERSATIONS
+# ALL CONVERSATIONS
 # ============================================================
 
 def get_user_conversations(user_id):
-    connection = get_db()
+    if not DATABASE_URL:
+        return []
 
-    cursor = connection.cursor(
-        cursor_factory=RealDictCursor
-    )
+    conn = None
 
-    cursor.execute(
-        """
-        SELECT id, title, updated_at
-        FROM conversations
-        WHERE user_id = %s
-        ORDER BY updated_at DESC
-        LIMIT 100
-        """,
-        (user_id,)
-    )
+    try:
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
 
-    rows = cursor.fetchall()
+        cur.execute("""
+            SELECT id, title, created_at, updated_at
+            FROM conversations
+            WHERE user_id = %s
+            ORDER BY updated_at DESC
+            LIMIT 100
+        """, (user_id,))
 
-    cursor.close()
-    connection.close()
+        rows = cur.fetchall()
+        cur.close()
 
-    return rows
+        return rows
+
+    except Exception as error:
+        print(
+            "LOAD HISTORY ERROR:",
+            type(error).__name__,
+            str(error)
+        )
+        return []
+
+    finally:
+        if conn:
+            conn.close()
 
 
 # ============================================================
-# MEMORY SAVE
+# RELEVANT OLD CHAT SEARCH
 # ============================================================
 
-def save_memory(
+def extract_search_words(text):
+    if not text:
+        return []
+
+    words = re.findall(
+        r"[A-Za-z0-9\u0900-\u097F]+",
+        text.lower()
+    )
+
+    stop_words = {
+        "the", "is", "am", "are", "was", "were",
+        "what", "why", "how", "when", "where",
+        "who", "which", "can", "could", "would",
+        "should", "do", "does", "did",
+        "and", "or", "to", "of", "in", "on",
+        "for", "a", "an", "my", "me", "i",
+        "you", "your", "it", "this", "that",
+        "hai", "ho", "hoga", "kya", "kaise",
+        "mujhe", "mera", "meri", "main", "mai",
+        "ke", "ki", "ka", "ko", "se", "me",
+        "और", "या", "है", "हूँ", "मैं", "मेरा",
+        "मेरी", "मुझे", "क्या", "कैसे", "क्यों",
+        "अब", "वो", "यह", "इस", "के", "की",
+        "का", "को", "में", "से"
+    }
+
+    result = []
+
+    for word in words:
+        if len(word) >= 3 and word not in stop_words:
+            if word not in result:
+                result.append(word)
+
+    return result[:15]
+
+
+def search_relevant_old_messages(
     user_id,
-    memory_key,
-    memory_value,
-    source_text=""
+    current_conversation_id,
+    query,
+    limit=15
 ):
-    if not user_id:
+    if not DATABASE_URL:
+        return []
+
+    keywords = extract_search_words(query)
+
+    if not keywords:
+        return []
+
+    conn = None
+
+    try:
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        conditions = []
+        params = [user_id]
+
+        for word in keywords:
+            conditions.append(
+                "LOWER(content) LIKE %s"
+            )
+            params.append("%" + word + "%")
+
+        sql = f"""
+            SELECT
+                conversation_id,
+                role,
+                content,
+                created_at
+            FROM messages
+            WHERE user_id = %s
+              AND conversation_id != %s
+              AND (
+                  {" OR ".join(conditions)}
+              )
+            ORDER BY created_at DESC
+            LIMIT %s
+        """
+
+        params.insert(1, current_conversation_id)
+        params.append(limit)
+
+        cur.execute(sql, params)
+
+        rows = cur.fetchall()
+        cur.close()
+
+        return rows
+
+    except Exception as error:
+        print(
+            "OLD MESSAGE SEARCH ERROR:",
+            type(error).__name__,
+            str(error)
+        )
+        return []
+
+    finally:
+        if conn:
+            conn.close()
+
+
+# ============================================================
+# LONG-TERM MEMORY
+# ============================================================
+
+def deterministic_key(prefix, value):
+    digest = hashlib.sha256(
+        value.strip().lower().encode("utf-8")
+    ).hexdigest()[:16]
+
+    return f"{prefix}:{digest}"
+
+
+def save_memory(user_id, memory_key, memory_value):
+    if not DATABASE_URL:
         return
 
-    if not memory_key or not memory_value:
+    if not memory_value or not memory_value.strip():
         return
 
-    connection = get_db()
-    cursor = connection.cursor()
+    conn = None
 
-    cursor.execute(
-        """
-        INSERT INTO memories
-        (
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+
+        cur.execute("""
+            INSERT INTO memories
+            (user_id, memory_key, memory_value)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (user_id, memory_key)
+            DO UPDATE SET
+                memory_value = EXCLUDED.memory_value,
+                updated_at = CURRENT_TIMESTAMP
+        """, (
             user_id,
             memory_key,
-            memory_value,
-            source_text
-        )
-        VALUES (%s, %s, %s, %s)
+            memory_value.strip()
+        ))
 
-        ON CONFLICT (user_id, memory_key)
-        DO UPDATE SET
-            memory_value = EXCLUDED.memory_value,
-            source_text = EXCLUDED.source_text,
-            updated_at = CURRENT_TIMESTAMP
-        """,
-        (
+        conn.commit()
+        cur.close()
+
+    except Exception as error:
+        print(
+            "SAVE MEMORY ERROR:",
+            type(error).__name__,
+            str(error)
+        )
+
+    finally:
+        if conn:
+            conn.close()
+
+
+def get_memories(user_id, limit=50):
+    if not DATABASE_URL:
+        return []
+
+    conn = None
+
+    try:
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        cur.execute("""
+            SELECT memory_key, memory_value
+            FROM memories
+            WHERE user_id = %s
+            ORDER BY updated_at DESC
+            LIMIT %s
+        """, (
             user_id,
-            memory_key,
-            memory_value[:1000],
-            source_text[:2000]
+            limit
+        ))
+
+        rows = cur.fetchall()
+        cur.close()
+
+        return rows
+
+    except Exception as error:
+        print(
+            "GET MEMORY ERROR:",
+            type(error).__name__,
+            str(error)
         )
-    )
+        return []
 
-    connection.commit()
+    finally:
+        if conn:
+            conn.close()
 
-    cursor.close()
-    connection.close()
 
+def delete_memories(user_id):
+    if not DATABASE_URL:
+        return
 
-# ============================================================
-# GET MEMORIES
-# ============================================================
+    conn = None
 
-def get_user_memories(user_id):
-    connection = get_db()
+    try:
+        conn = get_db()
+        cur = conn.cursor()
 
-    cursor = connection.cursor(
-        cursor_factory=RealDictCursor
-    )
+        cur.execute("""
+            DELETE FROM memories
+            WHERE user_id = %s
+        """, (user_id,))
 
-    cursor.execute(
-        """
-        SELECT
-            memory_key,
-            memory_value,
-            source_text,
-            updated_at
-        FROM memories
-        WHERE user_id = %s
-        ORDER BY updated_at DESC
-        """,
-        (user_id,)
-    )
+        conn.commit()
+        cur.close()
 
-    rows = cursor.fetchall()
+    except Exception as error:
+        print(
+            "DELETE MEMORY ERROR:",
+            type(error).__name__,
+            str(error)
+        )
 
-    cursor.close()
-    connection.close()
-
-    return rows
+    finally:
+        if conn:
+            conn.close()
 
 
 # ============================================================
-# DELETE ALL MEMORY
+# MEMORY EXTRACTION
 # ============================================================
 
-def delete_all_memories(user_id):
-    connection = get_db()
-    cursor = connection.cursor()
-
-    cursor.execute(
-        """
-        DELETE FROM memories
-        WHERE user_id = %s
-        """,
-        (user_id,)
-    )
-
-    connection.commit()
-
-    cursor.close()
-    connection.close()
-
-
-# ============================================================
-# EXTRACT LONG-TERM MEMORY
-# ============================================================
-
-def extract_memories(
-    user_id,
-    message
-):
+def extract_memories(user_id, message):
     if not message:
         return
 
     text = message.strip()
 
-    # --------------------------------------------------------
-    # NAME
-    # --------------------------------------------------------
+    # ---------------- NAME ----------------
 
     name_patterns = [
-        r"मेरा नाम\s+([A-Za-z\u0900-\u097F ]{2,60})\s+है",
-        r"मेरा नाम\s+([A-Za-z\u0900-\u097F ]{2,60})",
-        r"my name is\s+([A-Za-z ]{2,60})",
-        r"i am\s+([A-Za-z ]{2,60})",
-        r"i'm\s+([A-Za-z ]{2,60})",
+        r"(?:मेरा नाम|मेरा नाम है)\s+([A-Za-z\u0900-\u097F][A-Za-z\u0900-\u097F .'-]{1,50})",
+        r"(?:my name is|my name's)\s+([A-Za-z][A-Za-z .'-]{1,50})",
+        r"(?:mera naam)\s+([A-Za-z\u0900-\u097F][A-Za-z\u0900-\u097F .'-]{1,50})",
     ]
 
     for pattern in name_patterns:
-        match = re.search(
-            pattern,
-            text,
-            re.IGNORECASE
-        )
+        match = re.search(pattern, text, re.IGNORECASE)
 
         if match:
-            value = match.group(1).strip()
+            name = match.group(1).strip()
 
-            value = re.sub(
-                r"[।.!?,]+$",
+            name = re.sub(
+                r"\s+(hai|है|हूँ|ho|is)$",
                 "",
-                value
+                name,
+                flags=re.IGNORECASE
             ).strip()
 
-            if 1 < len(value) <= 60:
+            if 1 < len(name) <= 60:
                 save_memory(
                     user_id,
-                    "name",
-                    value,
-                    text
+                    "profile:name",
+                    name
                 )
-                print("Memory saved: name =", value)
+                print("Memory saved: name =", name)
                 break
 
-    # --------------------------------------------------------
-    # LIKES / INTERESTS
-    # --------------------------------------------------------
+    # ---------------- AGE ----------------
 
-    like_patterns = [
-        r"मुझे\s+(.{2,100}?)\s+पसंद\s+है",
-        r"मुझे\s+(.{2,100}?)\s+पसंद\s+हैं",
-        r"मुझे\s+(.{2,100}?)\s+अच्छा\s+लगता\s+है",
-        r"मुझे\s+(.{2,100}?)\s+अच्छे\s+लगते\s+हैं",
-        r"i\s+like\s+(.{2,100})",
-        r"i\s+love\s+(.{2,100})",
-        r"i\s+am\s+interested\s+in\s+(.{2,100})",
+    age_patterns = [
+        r"\bmeri age\s+(\d{1,3})",
+        r"\bmeri umar\s+(\d{1,3})",
+        r"\bmy age is\s+(\d{1,3})",
+        r"\bI am\s+(\d{1,3})\s*(?:years old|year old|saal ka|saal ki)?",
+        r"\bमैं\s+(\d{1,3})\s*(?:साल|वर्ष)?\s*(?:का|की)?\s*हूँ"
     ]
 
-    for pattern in like_patterns:
+    for pattern in age_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+
+        if match:
+            age = match.group(1)
+
+            try:
+                age_number = int(age)
+
+                if 5 <= age_number <= 120:
+                    save_memory(
+                        user_id,
+                        "profile:age",
+                        str(age_number)
+                    )
+                    print("Memory saved: age =", age_number)
+                    break
+
+            except Exception:
+                pass
+
+    # ---------------- LIKES / INTEREST ----------------
+
+    interest_patterns = [
+        r"मुझे\s+(.{2,100}?)\s+पसंद\s+है",
+        r"मुझे\s+(.{2,100}?)\s+पसंद\s+हैं",
+        r"mujhe\s+(.{2,100}?)\s+pasand\s+hai",
+        r"i\s+like\s+(.{2,100})",
+        r"i\s+love\s+(.{2,100})",
+    ]
+
+    for pattern in interest_patterns:
         match = re.search(
             pattern,
             text,
@@ -594,23 +735,24 @@ def extract_memories(
         if match:
             value = match.group(1).strip()
 
-            value = re.sub(
-                r"[।.!?,]+$",
-                "",
-                value
-            ).strip()
-
-            if value:
-                save_memory(
-                    user_id,
-                    "interest_" + str(abs(hash(value)))[:12],
-                    value,
-                    text
+            if 2 <= len(value) <= 120:
+                key = deterministic_key(
+                    "interest",
+                    value
                 )
 
-    # --------------------------------------------------------
-    # PROJECT / GOAL
-    # --------------------------------------------------------
+                save_memory(
+                    user_id,
+                    key,
+                    value
+                )
+
+                print(
+                    "Memory saved: interest =",
+                    value
+                )
+
+    # ---------------- PROJECT / GOAL ----------------
 
     project_patterns = [
         r"मैं\s+(.{2,150}?)\s+बना\s+रहा\s+हूँ",
@@ -620,6 +762,8 @@ def extract_memories(
         r"i\s+am\s+building\s+(.{2,150})",
         r"i\s+am\s+making\s+(.{2,150})",
         r"i\s+want\s+to\s+build\s+(.{2,150})",
+        r"मैं\s+(.{2,150}?)\s+बनाना\s+चाहता\s+हूँ",
+        r"मैं\s+(.{2,150}?)\s+बनाना\s+चाहता\s+हूं"
     ]
 
     for pattern in project_patterns:
@@ -632,290 +776,75 @@ def extract_memories(
         if match:
             value = match.group(1).strip()
 
-            value = re.sub(
-                r"[।.!?,]+$",
-                "",
-                value
-            ).strip()
-
-            if value:
-                save_memory(
-                    user_id,
-                    "project",
-                    value,
-                    text
+            if 3 <= len(value) <= 180:
+                key = deterministic_key(
+                    "goal",
+                    value
                 )
 
-    # --------------------------------------------------------
-    # STUDY / GOAL
-    # --------------------------------------------------------
-
-    goal_patterns = [
-        r"मेरा लक्ष्य\s+(.{2,150})",
-        r"मेरा गोल\s+(.{2,150})",
-        r"मुझे\s+(.{2,150}?)\s+करना\s+है",
-        r"my goal is\s+(.{2,150})",
-        r"i want to\s+(.{2,150})",
-    ]
-
-    for pattern in goal_patterns:
-        match = re.search(
-            pattern,
-            text,
-            re.IGNORECASE
-        )
-
-        if match:
-            value = match.group(1).strip()
-
-            value = re.sub(
-                r"[।.!?,]+$",
-                "",
-                value
-            ).strip()
-
-            if value:
                 save_memory(
                     user_id,
-                    "goal_" + str(abs(hash(value)))[:12],
-                    value,
-                    text
+                    key,
+                    value
+                )
+
+                print(
+                    "Memory saved: goal =",
+                    value
                 )
 
 
 # ============================================================
-# KEYWORD EXTRACTION
+# MEMORY TEXT
 # ============================================================
 
-def extract_keywords(text):
-    if not text:
-        return []
-
-    words = re.findall(
-        r"[\w\u0900-\u097F]{3,}",
-        text.lower()
-    )
-
-    stop_words = {
-        "क्या",
-        "कैसे",
-        "क्यों",
-        "मुझे",
-        "मेरा",
-        "मेरी",
-        "मेरे",
-        "तुम",
-        "आप",
-        "और",
-        "यह",
-        "वह",
-        "है",
-        "हैं",
-        "था",
-        "थे",
-        "कर",
-        "करना",
-        "करके",
-        "एक",
-        "अब",
-        "से",
-        "में",
-        "पर",
-        "को",
-        "का",
-        "की",
-        "के",
-        "लिए",
-        "और",
-        "the",
-        "what",
-        "how",
-        "why",
-        "this",
-        "that",
-        "with",
-        "from",
-        "have",
-        "your",
-        "you",
-        "are",
-        "is",
-        "was",
-        "for",
-        "and",
-        "can",
-        "please",
-    }
-
-    result = []
-
-    for word in words:
-        if word in stop_words:
-            continue
-
-        if word not in result:
-            result.append(word)
-
-    return result[:12]
-
-
-# ============================================================
-# RELEVANT OLD MESSAGES
-# ============================================================
-
-def search_relevant_old_messages(
-    user_id,
-    query,
-    limit=12
-):
-    keywords = extract_keywords(query)
-
-    if not keywords:
-        return []
-
-    connection = get_db()
-
-    cursor = connection.cursor(
-        cursor_factory=RealDictCursor
-    )
-
-    conditions = []
-    params = [user_id]
-
-    for keyword in keywords:
-        conditions.append(
-            "LOWER(content) LIKE %s"
-        )
-        params.append(
-            "%" + keyword + "%"
-        )
-
-    where_part = " OR ".join(conditions)
-
-    sql = f"""
-        SELECT
-            conversation_id,
-            role,
-            content,
-            created_at
-        FROM messages
-        WHERE user_id = %s
-          AND ({where_part})
-        ORDER BY created_at DESC
-        LIMIT %s
-    """
-
-    params.append(limit)
-
-    cursor.execute(
-        sql,
-        tuple(params)
-    )
-
-    rows = cursor.fetchall()
-
-    cursor.close()
-    connection.close()
-
-    return rows
-
-
-# ============================================================
-# BUILD MEMORY CONTEXT
-# ============================================================
-
-def build_memory_context(user_id):
-    memories = get_user_memories(user_id)
+def format_memories(user_id):
+    memories = get_memories(user_id)
 
     if not memories:
-        return "अभी कोई स्थायी memory उपलब्ध नहीं है।"
+        return "अभी कोई long-term memory saved नहीं है।"
 
     lines = []
 
-    for item in memories[:30]:
+    for item in memories:
         key = item["memory_key"]
         value = item["memory_value"]
 
-        lines.append(
-            f"- {key}: {value}"
-        )
+        if key.startswith("profile:name"):
+            lines.append(f"नाम: {value}")
 
-    return "\n".join(lines)
+        elif key.startswith("profile:age"):
+            lines.append(f"उम्र: {value}")
 
+        elif key.startswith("interest:"):
+            lines.append(f"पसंद/रुचि: {value}")
 
-# ============================================================
-# BUILD OLD CHAT CONTEXT
-# ============================================================
+        elif key.startswith("goal:"):
+            lines.append(f"लक्ष्य/प्रोजेक्ट: {value}")
 
-def build_old_chat_context(
-    user_id,
-    current_message
-):
-    rows = search_relevant_old_messages(
-        user_id,
-        current_message,
-        limit=12
-    )
-
-    if not rows:
-        return "कोई relevant पुरानी chat नहीं मिली।"
-
-    lines = []
-
-    # Reverse so older relevant messages appear first
-    for row in reversed(rows):
-        role = row["role"]
-
-        if role == "user":
-            speaker = "User"
         else:
-            speaker = "Gyan AI"
-
-        content = row["content"]
-
-        lines.append(
-            f"{speaker}: {content}"
-        )
+            lines.append(f"{value}")
 
     return "\n".join(lines)
 
 
 # ============================================================
-# BUILD CURRENT CHAT CONTEXT
-# ============================================================
-
-def build_current_chat_context(
-    conversation_id,
-    user_id,
-    limit=30
-):
-    messages = get_conversation_messages(
-        conversation_id,
-        user_id,
-        limit=limit
-    )
-
-    if not messages:
-        return "यह नई बातचीत है।"
-
-    lines = []
-
-    for item in messages:
-        if item["role"] == "user":
-            speaker = "User"
-        else:
-            speaker = "Gyan AI"
-
-        lines.append(
-            f"{speaker}: {item['content']}"
-        )
-
-    return "\n".join(lines)
-
-
-# ============================================================
-# GEMINI MODEL
+# GEMINI
 # ============================================================
 
 def ask_gemini_model(
-    me
+    message,
+    current_messages,
+    old_messages,
+    memories
+):
+    if gemini_client is None:
+        return None
+
+    current_chat_lines = []
+
+    for item in current_messages:
+        role = item.get("role")
+        content = item.get("content", "")
+
+        if role == "user":
