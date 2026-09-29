@@ -1338,192 +1338,142 @@ def call_gemini(
 # OPENROUTER
 # ============================================================
 
+# ============================================================
+# OPENROUTER
+# ============================================================
+
+OPENROUTER_MODELS = [
+    "nex-agi/nex-n2.5-mini:free",
+    "nex-agi/nex-n2.5-pro:free",
+    "inclusionai/ling-3.0-flash-sante:free",
+    "dots-studio/dots-3-note-preview:free",
+    "liquid/lfm-2.5-2.6b:free",
+]
+
+
 def call_openrouter(
-    prompt: str,
-    model: Optional[str] = None
+    prompt: str
 ):
-
     if not OPENROUTER_API_KEY:
-
+        print("OPENROUTER: API key not available")
         return None
 
-    selected_model = (
-        model
-        or OPENROUTER_MODEL
-    )
+    for model in OPENROUTER_MODELS:
 
-    payload = {
-
-        "model":
-            selected_model,
-
-        "messages": [
-
-            {
-                "role": "system",
-
-                "content": (
-                    "You are Gyan AI, "
-                    "a helpful AI assistant. "
-                    "Answer accurately and clearly. "
-                    "Use the user's language "
-                    "when practical."
-                )
-            },
-
-            {
-                "role": "user",
-
-                "content": prompt
-            }
-        ],
-
-        "temperature": 0.4
-    }
-
-    request = urllib.request.Request(
-
-        "https://openrouter.ai/api/v1/chat/completions",
-
-        data=json.dumps(
-            payload
-        ).encode(
-            "utf-8"
-        ),
-
-        headers={
-
-            "Authorization":
-                f"Bearer {OPENROUTER_API_KEY}",
-
-            "Content-Type":
-                "application/json",
-
-            "HTTP-Referer":
-                os.environ.get(
-                    "OPENROUTER_HTTP_REFERER",
-                    "https://gyan-ai-ef7h.onrender.com"
-                ),
-
-            "X-Title":
-                APP_TITLE
-        },
-
-        method="POST"
-    )
-
-    try:
-
-        with urllib.request.urlopen(
-            request,
-            timeout=90
-        ) as response:
-
-            result = json.loads(
-                response
-                .read()
-                .decode(
-                    "utf-8"
-                )
-            )
-
-        choices = (
-            result.get(
-                "choices"
-            )
-            or []
+        print(
+            "OPENROUTER: trying model:",
+            model
         )
-
-        if not choices:
-
-            print(
-                "OPENROUTER: "
-                "no choices returned"
-            )
-
-            return None
-
-        message = (
-            choices[0]
-            .get("message")
-            or {}
-        )
-
-        content = message.get(
-            "content"
-        )
-
-        if isinstance(
-            content,
-            list
-        ):
-
-            content = "".join(
-
-                part.get(
-                    "text",
-                    ""
-                )
-
-                if isinstance(
-                    part,
-                    dict
-                )
-
-                else str(part)
-
-                for part in content
-            )
-
-        if content:
-
-            return str(
-                content
-            ).strip()
-
-    except urllib.error.HTTPError as error:
 
         try:
 
-            detail = (
-                error
-                .read()
-                .decode(
-                    "utf-8",
-                    errors="replace"
+            payload = json.dumps(
+                {
+                    "model": model,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": prompt
+                        }
+                    ],
+                    "temperature": 0.7,
+                    "max_tokens": 2048
+                }
+            ).encode("utf-8")
+
+            request = urllib.request.Request(
+                "https://openrouter.ai/api/v1/chat/completions",
+                data=payload,
+                headers={
+                    "Authorization":
+                        f"Bearer {OPENROUTER_API_KEY}",
+
+                    "Content-Type":
+                        "application/json",
+
+                    "HTTP-Referer":
+                        "https://gyan-ai-ef7h.onrender.com",
+
+                    "X-Title":
+                        "Gyan AI"
+                },
+                method="POST"
+            )
+
+            with urllib.request.urlopen(
+                request,
+                timeout=90
+            ) as response:
+
+                result = json.loads(
+                    response
+                    .read()
+                    .decode("utf-8")
                 )
+
+            choices = (
+                result.get("choices")
+                or []
             )
 
-        except Exception:
+            if not choices:
+                print(
+                    "OPENROUTER: no choices returned"
+                )
+                continue
 
-            detail = str(
-                error
+            message = (
+                choices[0]
+                .get("message")
+                or {}
             )
 
-        print(
-            "OPENROUTER HTTP ERROR:",
-            error.code,
-            detail[:1000]
-        )
+            answer = message.get(
+                "content"
+            )
 
-    except (
-        urllib.error.URLError,
-        TimeoutError
-    ) as error:
+            if answer:
+                print(
+                    "OPENROUTER: success:",
+                    model
+                )
 
-        print(
-            "OPENROUTER NETWORK ERROR:",
-            type(error).__name__,
-            str(error)
-        )
+                return answer.strip()
 
-    except Exception as error:
+            print(
+                "OPENROUTER: empty answer:",
+                model
+            )
 
-        print(
-            "OPENROUTER ERROR:",
-            type(error).__name__,
-            str(error)
-        )
+        except urllib.error.HTTPError as error:
+
+            error_body = ""
+
+            try:
+                error_body = (
+                    error.read()
+                    .decode("utf-8")
+                )
+            except Exception:
+                pass
+
+            print(
+                "OPENROUTER HTTP ERROR:",
+                error.code,
+                error_body
+            )
+
+        except Exception as error:
+
+            print(
+                "OPENROUTER ERROR:",
+                type(error).__name__,
+                str(error)
+            )
+
+    print(
+        "OPENROUTER: all models failed"
+    )
 
     return None
 
