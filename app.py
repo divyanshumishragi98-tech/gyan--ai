@@ -1,19 +1,40 @@
 import os
 import time
 import json
+import re
+import uuid
 import urllib.request
 import urllib.error
 
 import gradio as gr
+import psycopg2
+from psycopg2.extras import RealDictCursor
 from google import genai
 
 
 # =========================================================
-# GYAN AI - API SETUP
+# GYAN AI — V13
+# POSTGRESQL + LONG TERM MEMORY + COMPLETE CHAT HISTORY
 # =========================================================
+
+
+APP_NAME = "Gyan AI"
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
+
+# Model can be changed from Render Environment Variables
+GEMINI_MODEL = os.environ.get(
+    "GEMINI_MODEL",
+    "gemini-3.6-flash"
+)
+
+DATABASE_URL = os.environ.get("DATABASE_URL")
+
+
+# =========================================================
+# GEMINI CLIENT
+# =========================================================
 
 gemini_client = (
     genai.Client(api_key=GEMINI_API_KEY)
@@ -39,425 +60,889 @@ OPENROUTER_MODELS = [
 
 
 # =========================================================
-# CHAT HISTORY HELPER
+# DATABASE
 # =========================================================
 
-def get_previous_messages(history):
+def get_db_connection():
     """
-    Gradio chat history से पिछली बातचीत निकालता है।
-    केवल user और assistant के text messages रखता है।
+    Render PostgreSQL से connection बनाता है।
     """
 
-    messages = []
-
-    for item in (history or [])[-20:]:
-
-        if not isinstance(item, dict):
-            continue
-
-        role = item.get("role")
-        content = item.get("content")
-
-        if role not in ("user", "assistant"):
-            continue
-
-        if isinstance(content, str) and content.strip():
-            messages.append({
-                "role": role,
-                "content": content.strip()
-            })
-
-    return messages
-
-
-# =========================================================
-# GEMINI FUNCTION WITH CHAT MEMORY
-# =========================================================
-
-def ask_gemini_model(message, previous_messages):
-
-    if gemini_client is None:
+    if not DATABASE_URL:
         return None
 
-    # पिछली बातचीत को Gemini के prompt में जोड़ना
-    conversation = []
-
-    for item in previous_messages:
-        if item["role"] == "user":
-            conversation.append(
-                "User: " + item["content"]
-            )
-        else:
-            conversation.append(
-                "Gyan AI: " + item["content"]
-            )
-
-    previous_chat = (
-        "\n".join(conversation)
-        if conversation
-        else "यह नई बातचीत है।"
+    return psycopg2.connect(
+        DATABASE_URL,
+        connect_timeout=10
     )
 
-    prompt = f"""
-तुम Gyan AI हो, एक helpful AI assistant।
 
-महत्वपूर्ण निर्देश:
-1. पिछली बातचीत को ध्यान से पढ़ो।
-2. उपयोगकर्ता ने अपना नाम या कोई जानकारी पहले बताई हो,
-   तो उसी बातचीत के संदर्भ में उसका उपयोग करो।
-3. अगर उपयोगकर्ता पूछे कि उसने पहले क्या बताया था,
-   तो पिछली बातचीत के आधार पर जवाब दो।
-4. उपयोगकर्ता की भाषा में जवाब दो।
-5. अगर जानकारी पिछली बातचीत में नहीं है,
-   तो साफ बताओ कि तुम्हें वह जानकारी नहीं मिली।
-6. बिना आधार के कोई व्यक्तिगत जानकारी मत बनाओ।
+def init_database():
+    """
+    पहली बार database में सभी tables बनाता है।
+    """
 
-पिछली बातचीत:
-{previous_chat}
+    if not DATABASE_URL:
+        print("WARNING: DATABASE_URL is not configured.")
+        return
 
-अभी उपयोगकर्ता का सवाल:
-{message}
+    connection = None
 
-Gyan AI का जवाब:
-"""
+    try:
 
-    for attempt in range(3):
+        connection = get_db_connection()
 
-        try:
-            response = gemini_client.models.generate_content(
-                model="gemini-3.6-flash",
-                contents=prompt
-            )
+        with connection.cursor() as cursor:
 
-            answer = getattr(response, "text", None)
+            # -------------------------------------------------
+            # USERS
+            # -------------------------------------------------
 
-            if isinstance(answer, str) and answer.strip():
-                return answer.strip()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS gyan_users (
+                    user_id TEXT PRIMARY KEY,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
 
-        except Exception as error:
+            # -------------------------------------------------
+            # CONVERSATIONS
+            # -------------------------------------------------
 
-            error_text = str(error).lower()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS conversations (
+                    conversation_id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    title TEXT DEFAULT 'New Chat',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
 
-            temporary_error = any(
-                term in error_text
-                for term in [
-                    "429",
-                    "503",
-                    "unavailable",
-                    "resource_exhausted",
-                    "overloaded",
-                    "timeout",
-                ]
-            )
+            # -------------------------------------------------
+            # MESSAGES
+            # -------------------------------------------------
 
-            print(
-                "Gemini error:",
-                type(error).__name__
-            )
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS messages (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    conversation_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
 
-            if temporary_error and attempt < 2:
-                time.sleep(2)
-                continue
+            # -------------------------------------------------
+            # LONG TERM MEMORIES
+            # -------------------------------------------------
 
-            break
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS memories (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    memory TEXT NOT NULL,
+                    memory_type TEXT DEFAULT 'general',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(user_id, memory)
+                )
+            """)
 
-    return None
+            # -------------------------------------------------
+            # INDEXES
+            # -------------------------------------------------
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_messages_user
+                ON messages(user_id)
+            """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_messages_conversation
+                ON messages(conversation_id)
+            """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_conversations_user
+                ON conversations(user_id)
+            """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_memories_user
+                ON memories(user_id)
+            """)
+
+        connection.commit()
+
+        print("=================================================")
+        print("GYAN AI DATABASE READY")
+        print("PostgreSQL tables initialized successfully.")
+        print("=================================================")
+
+    except Exception as error:
+
+        print(
+            "DATABASE INIT ERROR:",
+            type(error).__name__,
+            str(error)
+        )
+
+        if connection:
+            connection.rollback()
+
+    finally:
+
+        if connection:
+            connection.close()
+
+
+# Database initialize
+init_database()
 
 
 # =========================================================
-# OPENROUTER FUNCTION WITH CHAT MEMORY
+# USER MANAGEMENT
 # =========================================================
 
-def ask_openrouter_model(message, previous_messages):
+def ensure_user(user_id):
 
-    if not OPENROUTER_API_KEY:
-        return None
+    if not user_id:
+        return
 
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "You are Gyan AI, a helpful and friendly AI assistant. "
-                "Use the same language as the user's question. "
-                "Remember and use the conversation history provided "
-                "in this request. If the user previously shared "
-                "their name or other information in this conversation, "
-                "use it when relevant. Do not invent personal details. "
-                "Explain things simply for students."
+    connection = None
+
+    try:
+
+        connection = get_db_connection()
+
+        if not connection:
+            return
+
+        with connection.cursor() as cursor:
+
+            cursor.execute("""
+                INSERT INTO gyan_users (user_id)
+                VALUES (%s)
+                ON CONFLICT (user_id) DO NOTHING
+            """, (user_id,))
+
+        connection.commit()
+
+    except Exception as error:
+
+        print(
+            "USER ERROR:",
+            type(error).__name__,
+            str(error)
+        )
+
+        if connection:
+            connection.rollback()
+
+    finally:
+
+        if connection:
+            connection.close()
+
+
+# =========================================================
+# CONVERSATION MANAGEMENT
+# =========================================================
+
+def create_conversation(user_id, title="New Chat"):
+
+    conversation_id = str(uuid.uuid4())
+
+    connection = None
+
+    try:
+
+        connection = get_db_connection()
+
+        if not connection:
+            return conversation_id
+
+        with connection.cursor() as cursor:
+
+            cursor.execute("""
+                INSERT INTO conversations
+                (
+                    conversation_id,
+                    user_id,
+                    title
+                )
+                VALUES (%s, %s, %s)
+            """, (
+                conversation_id,
+                user_id,
+                title[:120]
+            ))
+
+        connection.commit()
+
+    except Exception as error:
+
+        print(
+            "CREATE CONVERSATION ERROR:",
+            type(error).__name__,
+            str(error)
+        )
+
+        if connection:
+            connection.rollback()
+
+    finally:
+
+        if connection:
+            connection.close()
+
+    return conversation_id
+
+
+def update_conversation_title(
+    user_id,
+    conversation_id,
+    message
+):
+
+    if not message:
+        return
+
+    title = message.strip().replace("\n", " ")
+
+    if len(title) > 70:
+        title = title[:67] + "..."
+
+    connection = None
+
+    try:
+
+        connection = get_db_connection()
+
+        if not connection:
+            return
+
+        with connection.cursor() as cursor:
+
+            cursor.execute("""
+                UPDATE conversations
+                SET
+                    title = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE
+                    conversation_id = %s
+                    AND user_id = %s
+            """, (
+                title,
+                conversation_id,
+                user_id
+            ))
+
+        connection.commit()
+
+    except Exception as error:
+
+        print(
+            "TITLE UPDATE ERROR:",
+            type(error).__name__,
+            str(error)
+        )
+
+        if connection:
+            connection.rollback()
+
+    finally:
+
+        if connection:
+            connection.close()
+
+
+def touch_conversation(
+    user_id,
+    conversation_id
+):
+
+    connection = None
+
+    try:
+
+        connection = get_db_connection()
+
+        if not connection:
+            return
+
+        with connection.cursor() as cursor:
+
+            cursor.execute("""
+                UPDATE conversations
+                SET updated_at = CURRENT_TIMESTAMP
+                WHERE conversation_id = %s
+                AND user_id = %s
+            """, (
+                conversation_id,
+                user_id
+            ))
+
+        connection.commit()
+
+    except Exception as error:
+
+        print(
+            "CONVERSATION UPDATE ERROR:",
+            type(error).__name__,
+            str(error)
+        )
+
+        if connection:
+            connection.rollback()
+
+    finally:
+
+        if connection:
+            connection.close()
+
+
+# =========================================================
+# SAVE MESSAGE
+# =========================================================
+
+def save_message(
+    user_id,
+    conversation_id,
+    role,
+    content
+):
+
+    if not user_id:
+        return
+
+    if not conversation_id:
+        return
+
+    if not content:
+        return
+
+    content = str(content).strip()
+
+    if not content:
+        return
+
+    connection = None
+
+    try:
+
+        connection = get_db_connection()
+
+        if not connection:
+            return
+
+        with connection.cursor() as cursor:
+
+            cursor.execute("""
+                INSERT INTO messages
+                (
+                    user_id,
+                    conversation_id,
+                    role,
+                    content
+                )
+                VALUES (%s, %s, %s, %s)
+            """, (
+                user_id,
+                conversation_id,
+                role,
+                content
+            ))
+
+        connection.commit()
+
+    except Exception as error:
+
+        print(
+            "SAVE MESSAGE ERROR:",
+            type(error).__name__,
+            str(error)
+        )
+
+        if connection:
+            connection.rollback()
+
+    finally:
+
+        if connection:
+            connection.close()
+
+
+# =========================================================
+# LOAD COMPLETE CONVERSATION
+# =========================================================
+
+def load_conversation(
+    user_id,
+    conversation_id
+):
+
+    if not user_id or not conversation_id:
+        return []
+
+    connection = None
+    result = []
+
+    try:
+
+        connection = get_db_connection()
+
+        if not connection:
+            return []
+
+        with connection.cursor(
+            cursor_factory=RealDictCursor
+        ) as cursor:
+
+            cursor.execute("""
+                SELECT role, content
+                FROM messages
+                WHERE user_id = %s
+                AND conversation_id = %s
+                ORDER BY id ASC
+            """, (
+                user_id,
+                conversation_id
+            ))
+
+            rows = cursor.fetchall()
+
+            for row in rows:
+
+                if row["role"] not in (
+                    "user",
+                    "assistant"
+                ):
+                    continue
+
+                result.append({
+                    "role": row["role"],
+                    "content": row["content"]
+                })
+
+    except Exception as error:
+
+        print(
+            "LOAD CONVERSATION ERROR:",
+            type(error).__name__,
+            str(error)
+        )
+
+    finally:
+
+        if connection:
+            connection.close()
+
+    return result
+
+
+# =========================================================
+# LOAD RECENT MESSAGES FROM ALL USER CHATS
+# =========================================================
+
+def load_recent_user_messages(
+    user_id,
+    limit=40
+):
+
+    if not user_id:
+        return []
+
+    connection = None
+    result = []
+
+    try:
+
+        connection = get_db_connection()
+
+        if not connection:
+            return []
+
+        with connection.cursor(
+            cursor_factory=RealDictCursor
+        ) as cursor:
+
+            cursor.execute("""
+                SELECT
+                    conversation_id,
+                    role,
+                    content,
+                    created_at
+                FROM messages
+                WHERE user_id = %s
+                ORDER BY id DESC
+                LIMIT %s
+            """, (
+                user_id,
+                limit
+            ))
+
+            rows = cursor.fetchall()
+
+            for row in reversed(rows):
+
+                result.append({
+                    "conversation_id":
+                        row["conversation_id"],
+                    "role":
+                        row["role"],
+                    "content":
+                        row["content"]
+                })
+
+    except Exception as error:
+
+        print(
+            "RECENT MESSAGE ERROR:",
+            type(error).__name__,
+            str(error)
+        )
+
+    finally:
+
+        if connection:
+            connection.close()
+
+    return result
+
+
+# =========================================================
+# RELEVANT OLD CHAT SEARCH
+# =========================================================
+
+STOP_WORDS = {
+    "the",
+    "is",
+    "are",
+    "was",
+    "were",
+    "what",
+    "why",
+    "how",
+    "when",
+    "where",
+    "who",
+    "this",
+    "that",
+    "with",
+    "from",
+    "have",
+    "has",
+    "and",
+    "for",
+    "you",
+    "your",
+    "मेरी",
+    "मेरा",
+    "मेरे",
+    "मुझे",
+    "क्या",
+    "कैसे",
+    "कहाँ",
+    "क्यों",
+    "अब",
+    "और",
+    "है",
+    "हैं",
+    "था",
+    "थी",
+    "थे",
+    "को",
+    "का",
+    "के",
+    "की",
+    "में",
+    "से",
+    "पर",
+    "एक",
+    "यह",
+    "वह",
+    "तो",
+    "भी",
+}
+
+
+def extract_search_keywords(text):
+
+    if not text:
+        return []
+
+    words = re.findall(
+        r"[A-Za-z0-9\u0900-\u097F]+",
+        text.lower()
+    )
+
+    keywords = []
+
+    for word in words:
+
+        if word in STOP_WORDS:
+            continue
+
+        if len(word) < 3:
+            continue
+
+        if word not in keywords:
+            keywords.append(word)
+
+    return keywords[:12]
+
+
+def search_relevant_old_messages(
+    user_id,
+    current_message,
+    limit=25
+):
+
+    if not user_id:
+        return []
+
+    keywords = extract_search_keywords(
+        current_message
+    )
+
+    if not keywords:
+        return []
+
+    connection = None
+    result = []
+
+    try:
+
+        connection = get_db_connection()
+
+        if not connection:
+            return []
+
+        conditions = []
+
+        values = [user_id]
+
+        for keyword in keywords:
+
+            conditions.append(
+                "content ILIKE %s"
             )
-        }
+
+            values.append(
+                "%" + keyword + "%"
+            )
+
+        query = f"""
+            SELECT
+                conversation_id,
+                role,
+                content,
+                created_at
+            FROM messages
+            WHERE user_id = %s
+            AND ({' OR '.join(conditions)})
+            ORDER BY id DESC
+            LIMIT %s
+        """
+
+        values.append(limit)
+
+        with connection.cursor(
+            cursor_factory=RealDictCursor
+        ) as cursor:
+
+            cursor.execute(
+                query,
+                tuple(values)
+            )
+
+            rows = cursor.fetchall()
+
+            for row in reversed(rows):
+
+                result.append({
+                    "conversation_id":
+                        row["conversation_id"],
+                    "role":
+                        row["role"],
+                    "content":
+                        row["content"]
+                })
+
+    except Exception as error:
+
+        print(
+            "OLD CHAT SEARCH ERROR:",
+            type(error).__name__,
+            str(error)
+        )
+
+    finally:
+
+        if connection:
+            connection.close()
+
+    return result
+
+
+# =========================================================
+# MEMORY SAVE
+# =========================================================
+
+def save_memory(
+    user_id,
+    memory,
+    memory_type="general"
+):
+
+    if not user_id or not memory:
+        return
+
+    memory = memory.strip()
+
+    if len(memory) < 3:
+        return
+
+    if len(memory) > 500:
+        memory = memory[:500]
+
+    connection = None
+
+    try:
+
+        connection = get_db_connection()
+
+        if not connection:
+            return
+
+        with connection.cursor() as cursor:
+
+            cursor.execute("""
+                INSERT INTO memories
+                (
+                    user_id,
+                    memory,
+                    memory_type
+                )
+                VALUES (%s, %s, %s)
+                ON CONFLICT (user_id, memory)
+                DO UPDATE SET
+                    updated_at = CURRENT_TIMESTAMP
+            """, (
+                user_id,
+                memory,
+                memory_type
+            ))
+
+        connection.commit()
+
+    except Exception as error:
+
+        print(
+            "SAVE MEMORY ERROR:",
+            type(error).__name__,
+            str(error)
+        )
+
+        if connection:
+            connection.rollback()
+
+    finally:
+
+        if connection:
+            connection.close()
+
+
+# =========================================================
+# SIMPLE LONG-TERM MEMORY DETECTOR
+# =========================================================
+
+def detect_memories(text):
+
+    if not text:
+        return []
+
+    memories = []
+
+    # -----------------------------------------------------
+    # NAME
+    # -----------------------------------------------------
+
+    name_patterns = [
+        r"(?:मेरा नाम|मुझे|my name is)\s+([A-Za-z\u0900-\u097F ]{2,50})",
+        r"(?:mera naam)\s+([A-Za-z\u0900-\u097F ]{2,50})",
     ]
 
-    # पिछली बातचीत
-    messages.extend(previous_messages)
+    for pattern in name_patterns:
 
-    # वर्तमान सवाल
-    messages.append({
-        "role": "user",
-        "content": message
-    })
-
-    url = "https://openrouter.ai/api/v1/chat/completions"
-
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json",
-    }
-
-    for model in OPENROUTER_MODELS:
-
-        payload = {
-            "model": model,
-            "messages": messages,
-            "max_tokens": 700,
-            "temperature": 0.4,
-        }
-
-        request = urllib.request.Request(
-            url,
-            data=json.dumps(payload).encode("utf-8"),
-            headers=headers,
-            method="POST",
+        match = re.search(
+            pattern,
+            text,
+            re.IGNORECASE
         )
 
-        try:
-            with urllib.request.urlopen(
-                request,
-                timeout=45
-            ) as response:
+        if match:
 
-                data = json.loads(
-                    response.read().decode("utf-8")
+            name = match.group(1).strip()
+
+            name = re.sub(
+                r"\b(है|हूं|हूँ|is|hai|hoon|hu)\b.*$",
+                "",
+                name,
+                flags=re.IGNORECASE
+            ).strip()
+
+            if name:
+
+                memories.append(
+                    (
+                        f"User's name is {name}",
+                        "name"
+                    )
                 )
 
-            choices = data.get("choices", [])
+                break
 
-            if not choices:
-                continue
+    # -----------------------------------------------------
+    # LIKES / INTERESTS
+    # -----------------------------------------------------
 
-            content = choices[0].get(
-                "message", {}
-            ).get("content")
+    like_patterns = [
+        r"मुझे\s+(.{2,100}?)\s+पसंद\s+है",
+        r"मुझे\s+(.{2,100}?)\s+पसंद\s+हैं",
+        r"i\s+like\s+(.{2,100})",
+        r"i\s+love\s+(.{2,100})",
+        r"मुझे\s+(.{2,100}?)\s+अच्छा\s+लगता\s+है",
+    ]
 
-            if isinstance(content, str) and content.strip():
-                return content.strip()
+    for pattern in like_patterns:
 
-            if isinstance(content, list):
-
-                text_parts = []
-
-                for item in content:
-                    if (
-                        isinstance(item, dict)
-                        and item.get("type") == "text"
-                    ):
-                        text_parts.append(
-                            item.get("text", "")
-                        )
-
-                answer = "\n".join(text_parts).strip()
-
-                if answer:
-                    return answer
-
-        except urllib.error.HTTPError as error:
-
-            print(
-                f"OpenRouter model failed: {model} "
-                f"(HTTP {error.code})"
-            )
-
-        except Exception as error:
-
-            print(
-                f"OpenRouter model failed: {model} "
-                f"({type(error).__name__})"
-            )
-
-        time.sleep(1)
-
-    return None
-
-
-# =========================================================
-# MAIN QUESTION FUNCTION
-# =========================================================
-
-def ask_gemini(message, history):
-
-    if not message or not message.strip():
-        return "", history or []
-
-    # पुरानी बातचीत को पहले सुरक्षित निकालें
-    previous_messages = get_previous_messages(history)
-
-    # Gemini पहले कोशिश करेगा
-    answer = ask_gemini_model(
-        message,
-        previous_messages
-    )
-
-    # Gemini विफल होने पर OpenRouter
-    if not answer:
-        print("Trying OpenRouter fallback...")
-
-        answer = ask_openrouter_model(
-            message,
-            previous_messages
+        match = re.search(
+            pattern,
+            text,
+            re.IGNORECASE
         )
 
-    # दोनों से जवाब न मिले
-    if not answer:
+        if match:
 
-        if not GEMINI_API_KEY and not OPENROUTER_API_KEY:
-            answer = (
-                "⚠️ कोई AI API configure नहीं है।\n\n"
-                "Admin को Render Environment में "
-                "GEMINI_API_KEY और OPENROUTER_API_KEY "
-                "जाँचनी होंगी।"
-            )
+            interest = match.group(1).strip()
 
-        else:
-            answer = (
-                "⚠️ अभी AI से जवाब नहीं मिल पाया।\n\n"
-                "मॉडल व्यस्त हो सकते हैं या उनकी उपयोग सीमा "
-                "पूरी हो सकती है। कृपया थोड़ी देर बाद कोशिश करें।"
-            )
+            if interest:
 
-    # पुरानी बातचीत को बनाए रखें
-    updated_history = list(history or [])
+                memories.append(
+                    (
+                        f"User likes {interest}",
+                        "interest"
+                    )
+                )
 
-    # वर्तमान सवाल और जवाब जोड़ें
-    updated_history.append({
-        "role": "user",
-        "content": message
-    })
+    # -----------------------------------------------------
+    # PROJECT / GOAL
+    # -----------------------------------------------------
 
-    updated_history.append({
-        "role": "assistant",
-        "content": answer
-    })
-
-    return "", updated_history
-
-
-# =========================================================
-# NEW CHAT
-# =========================================================
-
-def clear_chat():
-    return []
-
-
-# =========================================================
-# MODERN UI CSS
-# =========================================================
-
-css = """
-body {
-    background: #f7f8fc;
-}
-
-#app {
-    max-width: 900px;
-    margin: auto;
-}
-
-#title {
-    text-align: center;
-    padding: 18px;
-}
-
-#chat {
-    border-radius: 18px;
-}
-
-#message textarea {
-    border-radius: 24px !important;
-}
-
-#send {
-    border-radius: 50% !important;
-    min-width: 48px !important;
-    height: 48px !important;
-}
-
-#newchat {
-    border-radius: 12px !important;
-}
-"""
-
-
-# =========================================================
-# GYAN AI APP
-# =========================================================
-
-with gr.Blocks(
-    title="Gyan AI",
-    css=css
-) as app:
-
-    gr.Markdown(
-        """
-        <div id="title">
-            <h1>🧠 Gyan AI</h1>
-            <p>Ask. Learn. Grow.</p>
-        </div>
-        """
-    )
-
-    chatbot = gr.Chatbot(
-        elem_id="chat",
-        height=520,
-        placeholder="👋 Ask Gyan AI anything..."
-    )
-
-    with gr.Row():
-
-        message = gr.Textbox(
-            placeholder="Ask your question...",
-            show_label=False,
-            elem_id="message",
-            scale=8
-        )
-
-        send = gr.Button(
-            "➤",
-            elem_id="send",
-            scale=1
-        )
-
-    new_chat_btn = gr.Button(
-        "＋ New Chat",
-        elem_id="newchat"
-    )
-
-    # Send button
-    send.click(
-        ask_gemini,
-        inputs=[message, chatbot],
-        outputs=[message, chatbot]
-    )
-
-    # Enter key
-    message.submit(
-        ask_gemini,
-        inputs=[message, chatbot],
-        outputs=[message, chatbot]
-    )
-
-    # New chat
-    new_chat_btn.click(
-        clear_chat,
-        outputs=[chatbot]
-    )
-
-
-# =========================================================
-# START SERVER
-# =========================================================
-
-app.launch(
-    server_name="0.0.0.0",
-    server_port=int(os.environ.get("PORT", 7860))
-)
+    project_patterns = [
+        r"मैं\s+(.{2,150}?)\s+बना\s+रहा\s+हूँ",
+        r"मैं\s+(.{2,150}?)\s+बना\s+रहा\s+ह
