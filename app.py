@@ -349,4 +349,214 @@ def create_conversation(
             conn.close()
 
     return conversation_id
+# ============================================================
+# UPDATE CONVERSATION TITLE
+# ============================================================
+
+def update_conversation_title(
+    conversation_id: str,
+    user_id: str,
+    title: str
+):
+
+    if (
+        not DATABASE_URL
+        or not conversation_id
+    ):
+
+        return
+
+    conn = None
+
+    try:
+
+        conn = get_db()
+
+        cur = conn.cursor()
+
+        cur.execute("""
+            UPDATE conversations
+
+            SET
+                title = %s,
+                updated_at = CURRENT_TIMESTAMP
+
+            WHERE id = %s
+              AND user_id = %s
+        """, (
+            (title or "New Chat").strip()[:100],
+            conversation_id,
+            user_id
+        ))
+
+        conn.commit()
+
+        cur.close()
+
+    except Exception as error:
+
+        print(
+            "UPDATE TITLE ERROR:",
+            type(error).__name__,
+            str(error)
+        )
+
+    finally:
+
+        if conn:
+
+            conn.close()
+
+
+# ============================================================
+# GET USER CONVERSATIONS
+# ============================================================
+
+def get_user_conversations(
+    user_id: str,
+    limit: int = 100
+):
+
+    if not DATABASE_URL:
+
+        return []
+
+    conn = None
+
+    try:
+
+        conn = get_db()
+
+        cur = conn.cursor(
+            cursor_factory=RealDictCursor
+        )
+
+        cur.execute("""
+            SELECT
+                id,
+                title,
+                created_at,
+                updated_at
+
+            FROM conversations
+
+            WHERE user_id = %s
+
+            ORDER BY updated_at DESC
+
+            LIMIT %s
+        """, (
+            user_id,
+            limit
+        ))
+
+        rows = cur.fetchall()
+
+        cur.close()
+
+        return rows
+
+    except Exception as error:
+
+        print(
+            "LOAD HISTORY ERROR:",
+            type(error).__name__,
+            str(error)
+        )
+
+        return []
+
+    finally:
+
+        if conn:
+
+            conn.close()
+
+
+# ============================================================
+# SAVE MESSAGE
+# ============================================================
+
+def save_message(
+    user_id: str,
+    conversation_id: str,
+    role: str,
+    content: str
+):
+
+    if (
+        not DATABASE_URL
+        or not conversation_id
+    ):
+
+        return
+
+    content = str(
+        content or ""
+    ).strip()
+
+    if not content:
+
+        return
+
+    conn = None
+
+    try:
+
+        conn = get_db()
+
+        cur = conn.cursor()
+
+        cur.execute("""
+            INSERT INTO messages (
+                user_id,
+                conversation_id,
+                role,
+                content
+            )
+
+            VALUES (
+                %s,
+                %s,
+                %s,
+                %s
+            )
+        """, (
+            user_id,
+            conversation_id,
+            role,
+            content
+        ))
+
+        cur.execute("""
+            UPDATE conversations
+
+            SET
+                updated_at = CURRENT_TIMESTAMP
+
+            WHERE id = %s
+              AND user_id = %s
+        """, (
+            conversation_id,
+            user_id
+        ))
+
+        conn.commit()
+
+        cur.close()
+
+    except Exception as error:
+
+        print(
+            "SAVE MESSAGE ERROR:",
+            type(error).__name__,
+            str(error)
+        )
+
+    finally:
+
+        if conn:
+
+            conn.close()
+
 
