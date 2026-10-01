@@ -266,7 +266,205 @@ cur.execute("""
 # ============================================================
 # USER MANAGEMENT
 # ============================================================
+def hash_password(password: str, salt: str) -> str:
+    return hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt.encode("utf-8"),
+        120000
+    ).hex()
 
+
+def create_auth_token(user_id: str) -> str:
+    if not GYAN_AUTH_SECRET:
+        raise RuntimeError("GYAN_AUTH_SECRET is not configured.")
+
+    payload = f"{user_id}.{int(time.time())}"
+
+    signature = hmac.new(
+        GYAN_AUTH_SECRET.encode("utf-8"),
+        payload.encode("utf-8"),
+        hashlib.sha256
+    ).digest()
+
+    encoded_signature = base64.urlsafe_b64encode(
+        signature
+    ).decode("utf-8").rstrip("=")
+
+    return f"{payload}.{encoded_signature}"
+
+
+def verify_auth_token(token: str):
+    if not GYAN_AUTH_SECRET or not token:
+        return None
+
+    try:
+        parts = token.split(".")
+
+        if len(parts) != 3:
+            return None
+
+        user_id, timestamp, signature = parts
+
+        payload = f"{user_id}.{timestamp}"
+
+        expected_signature = hmac.new(
+            GYAN_AUTH_SECRET.encode("utf-8"),
+            payload.encode("utf-8"),
+            hashlib.sha256
+        ).digest()
+
+        expected_signature = base64.urlsafe_b64encode(
+            expected_signature
+        ).decode("utf-8").rstrip("=")
+
+        if not hmac.compare_digest(
+            signature,
+            expected_signature
+        ):
+            return None
+
+        token_time = int(timestamp)
+
+        # Token valid for 30 days
+        if time.time() - token_time > 30 * 24 * 60 * 60:
+            return None
+
+        return user_id
+
+    except Exception as error:
+        print("TOKEN VERIFY ERROR:", type(error).__name__, str(error))
+        return None
+
+
+def get_bearer_token(authorization: str):
+    if not authorization:
+        return None
+
+    if not authorization.startswith("Bearer "):
+        return None
+
+    return authorization[7:].strip()
+
+
+def register_user(username: str, password: str):
+    username = username.strip().lower()
+
+    if len(username) < 3:
+        return None, "Username कम से कम 3 characters का होना चाहिए।"
+
+    if len(password) < 6:
+        return None, "Password कम से कम 6 characters का होना चाहिए।"
+
+    salt = secrets.token_hex(16)
+    password_hash = hash_password(password, salt)
+    user_id = str(uuid.uuid4())
+
+    conn = get_db()
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO gyan_users
+                (
+                    id,
+                    username,
+                    password_hash,
+                    password_salt
+                )
+                VALUES (%s, %s, %s, %s)
+                """,
+                (
+                    user_id,
+                    username,
+                    password_hash,
+                    salt
+                )
+            )
+
+        conn.commit()
+
+        token = create_auth_token(user_id)
+
+        return {
+            "user_id": user_id,
+            "username": username,
+            "token": token
+        }, None
+
+    except psycopg2.errors.UniqueViolation:
+        conn.rollback()
+        return None, "यह username पहले से मौजूद है।"
+
+    except Exception as error:
+        conn.rollback()
+        print(
+            "REGISTER ERROR:",
+            type(error).__name__,
+            str(error)
+        )
+        return None, "Registration failed."
+
+    finally:
+        conn.close()
+
+
+def login_user(username: str, password: str):
+    username = username.strip().lower()
+
+    conn = get_db()
+
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    username,
+                    password_hash,
+                    password_salt
+                FROM gyan_users
+                WHERE username = %s
+                LIMIT 1
+                """,
+                (username,)
+            )
+
+            user = cur.fetchone()
+
+        if not user:
+            return None, "Username या password गलत है।"
+
+        expected_hash = hash_password(
+            password,
+            user["password_salt"]
+        )
+
+        if not hmac.compare_digest(
+            expected_hash,
+            user["password_hash"]
+        ):
+            return None, "Username या password गलत है।"
+
+        token = create_auth_token(user["id"])
+
+        return {
+            "user_id": user["id"],
+            "username": user["username"],
+            "token": token
+        }, None
+
+    except Exception as error:
+        print(
+            "LOGIN ERROR:",
+            type(error).__name__,
+            str(error)
+        )
+        return None, "Login failed."
+
+    finally:
+        conn.close()
 def ensure_user(
     user_id: Optional[str]
 ) -> str:
