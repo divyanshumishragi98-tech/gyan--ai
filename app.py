@@ -125,7 +125,20 @@ def init_database():
         conn = get_db()
 
         cur = conn.cursor()
+cur.execute("""
+    ALTER TABLE gyan_users
+    ADD COLUMN IF NOT EXISTS username TEXT UNIQUE
+""")
 
+cur.execute("""
+    ALTER TABLE gyan_users
+    ADD COLUMN IF NOT EXISTS password_hash TEXT
+""")
+
+cur.execute("""
+    ALTER TABLE gyan_users
+    ADD COLUMN IF NOT EXISTS password_salt TEXT
+""")
         # ----------------------------------------------------
         # USERS
         # ----------------------------------------------------
