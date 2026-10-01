@@ -68,16 +68,31 @@ gemini_client = (
 # DATABASE CONNECTION
 # ============================================================
 
+from urllib.parse import urlparse, unquote
+
+
 def get_db():
 
     if not DATABASE_URL:
-
         raise RuntimeError(
             "DATABASE_URL is not configured."
         )
 
+    url = DATABASE_URL.strip().strip('"').strip("'")
+
+    parsed = urlparse(url)
+
+    if not parsed.hostname:
+        raise RuntimeError(
+            "Invalid DATABASE_URL: hostname missing."
+        )
+
     return psycopg2.connect(
-        DATABASE_URL,
+        host=parsed.hostname,
+        port=parsed.port or 5432,
+        database=parsed.path.lstrip("/"),
+        user=unquote(parsed.username or ""),
+        password=unquote(parsed.password or ""),
         connect_timeout=10
     )
 
