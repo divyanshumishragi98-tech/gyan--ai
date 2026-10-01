@@ -9,6 +9,9 @@ from typing import Optional
 
 import gradio as gr
 import psycopg2
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+import uvicorn
 from psycopg2.extras import RealDictCursor
 from google import genai
 
