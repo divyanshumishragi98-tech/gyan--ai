@@ -36,7 +36,10 @@ GEMINI_MODEL = os.environ.get(
     "GEMINI_MODEL",
     "gemini-3.6-flash"
 )
+GYAN_AUTH_SECRET = os.environ.get("GYAN_AUTH_SECRET")
 
+if not GYAN_AUTH_SECRET:
+    print("WARNING: GYAN_AUTH_SECRET is not configured.")
 OPENROUTER_MODEL = os.environ.get(
     "OPENROUTER_MODEL",
     "nex-agi/nex-n2.5-mini:free"
