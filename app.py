@@ -125,20 +125,7 @@ def init_database():
         conn = get_db()
 
         cur = conn.cursor()
-cur.execute("""
-    ALTER TABLE gyan_users
-    ADD COLUMN IF NOT EXISTS username TEXT UNIQUE
-""")
 
-cur.execute("""
-    ALTER TABLE gyan_users
-    ADD COLUMN IF NOT EXISTS password_hash TEXT
-""")
-
-cur.execute("""
-    ALTER TABLE gyan_users
-    ADD COLUMN IF NOT EXISTS password_salt TEXT
-""")
         # ----------------------------------------------------
         # USERS
         # ----------------------------------------------------
@@ -154,6 +141,32 @@ cur.execute("""
                 updated_at
                     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
+        """)
+
+        # ----------------------------------------------------
+        # AUTH COLUMNS
+        # ----------------------------------------------------
+
+        cur.execute("""
+            ALTER TABLE gyan_users
+            ADD COLUMN IF NOT EXISTS username TEXT
+        """)
+
+        cur.execute("""
+            ALTER TABLE gyan_users
+            ADD COLUMN IF NOT EXISTS password_hash TEXT
+        """)
+
+        cur.execute("""
+            ALTER TABLE gyan_users
+            ADD COLUMN IF NOT EXISTS password_salt TEXT
+        """)
+
+        cur.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS
+            idx_gyan_users_username
+            ON gyan_users(username)
+            WHERE username IS NOT NULL
         """)
 
         # ----------------------------------------------------
