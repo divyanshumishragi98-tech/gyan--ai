@@ -1783,7 +1783,99 @@ def chat_submit(
         memory_view(user_id)
     )
 
+# ============================================================
+# DIRECT API FOR EXPO APP
+# ============================================================
 
+api = FastAPI()
+
+api.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@api.post("/api/chat")
+async def api_chat(data: dict):
+
+    try:
+        message = str(
+            data.get("message", "")
+        ).strip()
+
+        history = data.get(
+            "history",
+            []
+        )
+
+        user_id = data.get(
+            "user_id"
+        )
+
+        conversation_id = data.get(
+            "conversation_id"
+        )
+
+        if not message:
+            return {
+                "ok": False,
+                "answer": "Message खाली है।"
+            }
+
+        result = chat_submit(
+            message,
+            history,
+            user_id,
+            conversation_id
+        )
+
+        (
+            _,
+            new_history,
+            new_user_id,
+            new_conversation_id,
+            memory
+        ) = result
+
+        answer = ""
+
+        if new_history:
+            last_item = new_history[-1]
+
+            if isinstance(last_item, dict):
+                if last_item.get("role") == "assistant":
+                    answer = str(
+                        last_item.get(
+                            "content",
+                            ""
+                        )
+                    )
+
+        return {
+            "ok": True,
+            "answer": answer,
+            "history": new_history,
+            "user_id": new_user_id,
+            "conversation_id": new_conversation_id,
+            "memory": memory
+        }
+
+    except Exception as error:
+
+        print(
+            "DIRECT API ERROR:",
+            type(error).__name__,
+            str(error)
+        )
+
+        return {
+            "ok": False,
+            "answer": "",
+            "error": str(error)
+        }
 # ============================================================
 # NEW CHAT
 # ============================================================
