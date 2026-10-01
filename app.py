@@ -6,7 +6,7 @@ import json
 import urllib.request
 import urllib.error
 from typing import Optional
-
+from urllib.parse import urlparse, unquote
 import gradio as gr
 import psycopg2
 from fastapi import FastAPI
