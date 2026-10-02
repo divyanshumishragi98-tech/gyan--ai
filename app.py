@@ -18,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 from psycopg2.extras import RealDictCursor
 from google import genai
-
+from fastapi import FastAPI, Header
 
 # ============================================================
 #                 GYAN AI V13.5
