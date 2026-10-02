@@ -2031,6 +2031,9 @@ def chat_submit(
 
 # ============================================================
 # DIRECT API FOR EXPO APP
+# =====================================================--==-----
+# ============================================================
+# DIRECT API FOR EXPO APP — AUTHENTICATED
 # ============================================================
 
 api = FastAPI()
@@ -2044,22 +2047,166 @@ api.add_middleware(
 )
 
 
-@api.post("/api/chat")
-async def api_chat(data: dict):
+# ============================================================
+# AUTHENTICATION HELPER
+# ============================================================
+
+def authenticated_user(authorization: str = ""):
+    token = get_bearer_token(authorization)
+
+    user_id = verify_auth_token(token)
+
+    if not user_id:
+        return None
+
+    return user_id
+
+
+# ============================================================
+# REGISTER
+# ============================================================
+
+@api.post("/api/register")
+async def api_register(data: dict):
 
     try:
+        username = str(
+            data.get("username", "")
+        ).strip()
+
+        password = str(
+            data.get("password", "")
+        )
+
+        if not username or not password:
+            return {
+                "ok": False,
+                "error": "Username और password दोनों जरूरी हैं।"
+            }
+
+        result, error = register_user(
+            username,
+            password
+        )
+
+        if error:
+            return {
+                "ok": False,
+                "error": error
+            }
+
+        return {
+            "ok": True,
+            "user_id": result["user_id"],
+            "username": result["username"],
+            "token": result["token"]
+        }
+
+    except Exception as error:
+        print("REGISTER API ERROR:", str(error))
+
+        return {
+            "ok": False,
+            "error": "Registration failed."
+        }
+
+
+# ============================================================
+# LOGIN
+# ============================================================
+
+@api.post("/api/login")
+async def api_login(data: dict):
+
+    try:
+        username = str(
+            data.get("username", "")
+        ).strip()
+
+        password = str(
+            data.get("password", "")
+        )
+
+        if not username or not password:
+            return {
+                "ok": False,
+                "error": "Username और password दोनों जरूरी हैं।"
+            }
+
+        result, error = login_user(
+            username,
+            password
+        )
+
+        if error:
+            return {
+                "ok": False,
+                "error": error
+            }
+
+        return {
+            "ok": True,
+            "user_id": result["user_id"],
+            "username": result["username"],
+            "token": result["token"]
+        }
+
+    except Exception as error:
+        print("LOGIN API ERROR:", str(error))
+
+        return {
+            "ok": False,
+            "error": "Login failed."
+        }
+
+
+# ============================================================
+# LOGOUT
+# ============================================================
+
+@api.post("/api/logout")
+async def api_logout(
+    authorization: str = Header(default="")
+):
+
+    user_id = authenticated_user(authorization)
+
+    if not user_id:
+        return {
+            "ok": False,
+            "error": "Invalid or expired token."
+        }
+
+    # Stateless token: Expo must delete its saved token.
+    return {
+        "ok": True,
+        "message": "Logged out successfully."
+    }
+
+
+# ============================================================
+# CHAT — AUTHENTICATION REQUIRED
+# ============================================================
+
+@api.post("/api/chat")
+async def api_chat(
+    data: dict,
+    authorization: str = Header(default="")
+):
+
+    try:
+        # Never trust user_id sent in the request body.
+        user_id = authenticated_user(authorization)
+
+        if not user_id:
+            return {
+                "ok": False,
+                "error": "Login required. Please log in again."
+            }
+
         message = str(
             data.get("message", "")
         ).strip()
-
-        history = data.get(
-            "history",
-            []
-        )
-
-        user_id = data.get(
-            "user_id"
-        )
 
         conversation_id = data.get(
             "conversation_id"
@@ -2071,9 +2218,39 @@ async def api_chat(data: dict):
                 "answer": "Message खाली है।"
             }
 
+        # Verify that the conversation belongs to this user.
+        if conversation_id:
+            conn = get_db()
+
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT 1
+                        FROM conversations
+                        WHERE id = %s
+                          AND user_id = %s
+                        LIMIT 1
+                        """,
+                        (conversation_id, user_id)
+                    )
+
+                    owns_conversation = cur.fetchone()
+
+            finally:
+                conn.close()
+
+            if not owns_conversation:
+                return {
+                    "ok": False,
+                    "error": "Conversation not found."
+                }
+
+        # Do not accept client-supplied history as trusted data.
+        # The backend should load the user's own messages.
         result = chat_submit(
             message,
-            history,
+            [],
             user_id,
             conversation_id
         )
@@ -2094,23 +2271,19 @@ async def api_chat(data: dict):
             if isinstance(last_item, dict):
                 if last_item.get("role") == "assistant":
                     answer = str(
-                        last_item.get(
-                            "content",
-                            ""
-                        )
+                        last_item.get("content", "")
                     )
 
         return {
             "ok": True,
             "answer": answer,
             "history": new_history,
-            "user_id": new_user_id,
+            "user_id": user_id,
             "conversation_id": new_conversation_id,
             "memory": memory
         }
 
     except Exception as error:
-
         print(
             "DIRECT API ERROR:",
             type(error).__name__,
@@ -2120,7 +2293,7 @@ async def api_chat(data: dict):
         return {
             "ok": False,
             "answer": "",
-            "error": str(error)
+            "error": "Chat request failed."
         }
 # ============================================================
 # NEW CHAT
