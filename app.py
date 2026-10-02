@@ -13,7 +13,6 @@ from typing import Optional
 from urllib.parse import urlparse, unquote
 import gradio as gr
 import psycopg2
-from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 from psycopg2.extras import RealDictCursor
@@ -2028,12 +2027,10 @@ def chat_submit(
         conversation_id,
         memory_view(user_id)
     )
-
+    
 # ============================================================
 # DIRECT API FOR EXPO APP
-# =====================================================--==-----
-# ============================================================
-# DIRECT API FOR EXPO APP — AUTHENTICATED
+# AUTHENTICATED CHAT + HISTORY + MEMORY
 # ============================================================
 
 api = FastAPI()
@@ -2047,6 +2044,852 @@ api.add_middleware(
 )
 
 
+# ============================================================
+# AUTH HELPER
+# ============================================================
+
+def authenticated_user(authorization: str = ""):
+
+    token = get_bearer_token(authorization)
+
+    user_id = verify_auth_token(token)
+
+    if not user_id:
+        return None
+
+    return user_id
+
+
+# ============================================================
+# REGISTER
+# ============================================================
+
+@api.post("/api/register")
+async def api_register(data: dict):
+
+    try:
+
+        username = str(
+            data.get("username", "")
+        ).strip()
+
+        password = str(
+            data.get("password", "")
+        )
+
+        if not username or not password:
+
+            return {
+                "ok": False,
+                "error":
+                    "Username और password दोनों जरूरी हैं।"
+            }
+
+        result, error = register_user(
+            username,
+            password
+        )
+
+        if error:
+
+            return {
+                "ok": False,
+                "error": error
+            }
+
+        return {
+            "ok": True,
+            "user_id": result["user_id"],
+            "username": result["username"],
+            "token": result["token"]
+        }
+
+    except Exception as error:
+
+        print(
+            "REGISTER API ERROR:",
+            type(error).__name__,
+            str(error)
+        )
+
+        return {
+            "ok": False,
+            "error": "Registration failed."
+        }
+
+
+# ============================================================
+# LOGIN
+# ============================================================
+
+@api.post("/api/login")
+async def api_login(data: dict):
+
+    try:
+
+        username = str(
+            data.get("username", "")
+        ).strip()
+
+        password = str(
+            data.get("password", "")
+        )
+
+        if not username or not password:
+
+            return {
+                "ok": False,
+                "error":
+                    "Username और password दोनों जरूरी हैं।"
+            }
+
+        result, error = login_user(
+            username,
+            password
+        )
+
+        if error:
+
+            return {
+                "ok": False,
+                "error": error
+            }
+
+        return {
+            "ok": True,
+            "user_id": result["user_id"],
+            "username": result["username"],
+            "token": result["token"]
+        }
+
+    except Exception as error:
+
+        print(
+            "LOGIN API ERROR:",
+            type(error).__name__,
+            str(error)
+        )
+
+        return {
+            "ok": False,
+            "error": "Login failed."
+        }
+
+
+# ============================================================
+# LOGOUT
+# ============================================================
+
+@api.post("/api/logout")
+async def api_logout(
+    authorization: str = Header(default="")
+):
+
+    user_id = authenticated_user(
+        authorization
+    )
+
+    if not user_id:
+
+        return {
+            "ok": False,
+            "error": "Invalid or expired token."
+        }
+
+    return {
+        "ok": True,
+        "message": "Logged out successfully."
+    }
+
+
+# ============================================================
+# CHAT
+# ============================================================
+
+@api.post("/api/chat")
+async def api_chat(
+    data: dict,
+    authorization: str = Header(default="")
+):
+
+    try:
+
+        # ---------------------------------------------
+        # GET USER FROM TOKEN
+        # ---------------------------------------------
+
+        user_id = authenticated_user(
+            authorization
+        )
+
+        if not user_id:
+
+            return {
+                "ok": False,
+                "error":
+                    "Login required. Please log in again."
+            }
+
+        # ---------------------------------------------
+        # MESSAGE
+        # ---------------------------------------------
+
+        message = str(
+            data.get("message", "")
+        ).strip()
+
+        conversation_id = data.get(
+            "conversation_id"
+        )
+
+        if not message:
+
+            return {
+                "ok": False,
+                "answer": "Message खाली है।"
+            }
+
+        # ---------------------------------------------
+        # CHECK CONVERSATION OWNERSHIP
+        # ---------------------------------------------
+
+        if conversation_id:
+
+            conn = get_db()
+
+            try:
+
+                with conn.cursor() as cur:
+
+                    cur.execute("""
+                        SELECT 1
+
+                        FROM conversations
+
+                        WHERE id = %s
+                          AND user_id = %s
+
+                        LIMIT 1
+                    """, (
+                        conversation_id,
+                        user_id
+                    ))
+
+                    owns_conversation = cur.fetchone()
+
+            finally:
+
+                conn.close()
+
+            if not owns_conversation:
+
+                return {
+                    "ok": False,
+                    "error": "Conversation not found."
+                }
+
+        # ---------------------------------------------
+        # CHAT ENGINE
+        # ---------------------------------------------
+
+        result = chat_submit(
+            message,
+            [],
+            user_id,
+            conversation_id
+        )
+
+        (
+            _,
+            new_history,
+            new_user_id,
+            new_conversation_id,
+            memory
+        ) = result
+
+        # ---------------------------------------------
+        # GET ANSWER
+        # ---------------------------------------------
+
+        answer = ""
+
+        if new_history:
+
+            last_item = new_history[-1]
+
+            if isinstance(
+                last_item,
+                dict
+            ):
+
+                if last_item.get(
+                    "role"
+                ) == "assistant":
+
+                    answer = str(
+                        last_item.get(
+                            "content",
+                            ""
+                        )
+                    )
+
+        return {
+            "ok": True,
+            "answer": answer,
+            "history": new_history,
+            "user_id": user_id,
+            "conversation_id":
+                new_conversation_id,
+            "memory": memory
+        }
+
+    except Exception as error:
+
+        print(
+            "DIRECT API ERROR:",
+            type(error).__name__,
+            str(error)
+        )
+
+        return {
+            "ok": False,
+            "answer": "",
+            "error":
+                "Chat request failed."
+        }
+
+
+# ============================================================
+# GET CHAT HISTORY
+# ============================================================
+
+@api.get("/api/history")
+async def api_history(
+    authorization: str = Header(default="")
+):
+
+    try:
+
+        user_id = authenticated_user(
+            authorization
+        )
+
+        if not user_id:
+
+            return {
+                "ok": False,
+                "error": "Login required."
+            }
+
+        conversations = get_user_conversations(
+            user_id,
+            100
+        )
+
+        result = []
+
+        for conversation in conversations:
+
+            result.append({
+                "id": conversation["id"],
+                "title":
+                    conversation["title"],
+                "created_at":
+                    str(
+                        conversation["created_at"]
+                    ),
+                "updated_at":
+                    str(
+                        conversation["updated_at"]
+                    )
+            })
+
+        return {
+            "ok": True,
+            "history": result
+        }
+
+    except Exception as error:
+
+        print(
+            "HISTORY API ERROR:",
+            type(error).__name__,
+            str(error)
+        )
+
+        return {
+            "ok": False,
+            "error": "History load failed."
+        }
+
+
+# ============================================================
+# GET ONE CONVERSATION
+# ============================================================
+
+@api.get(
+    "/api/history/{conversation_id}"
+)
+async def api_get_conversation(
+    conversation_id: str,
+    authorization: str = Header(default="")
+):
+
+    try:
+
+        user_id = authenticated_user(
+            authorization
+        )
+
+        if not user_id:
+
+            return {
+                "ok": False,
+                "error": "Login required."
+            }
+
+        # ---------------------------------------------
+        # OWNERSHIP CHECK
+        # ---------------------------------------------
+
+        conn = get_db()
+
+        try:
+
+            with conn.cursor(
+                cursor_factory=RealDictCursor
+            ) as cur:
+
+                cur.execute("""
+                    SELECT
+                        id,
+                        title,
+                        created_at,
+                        updated_at
+
+                    FROM conversations
+
+                    WHERE id = %s
+                      AND user_id = %s
+
+                    LIMIT 1
+                """, (
+                    conversation_id,
+                    user_id
+                ))
+
+                conversation = cur.fetchone()
+
+        finally:
+
+            conn.close()
+
+        if not conversation:
+
+            return {
+                "ok": False,
+                "error": "Conversation not found."
+            }
+
+        messages = get_conversation_messages(
+            user_id,
+            conversation_id,
+            200
+        )
+
+        return {
+            "ok": True,
+            "conversation": {
+                "id":
+                    conversation["id"],
+                "title":
+                    conversation["title"],
+                "created_at":
+                    str(
+                        conversation["created_at"]
+                    ),
+                "updated_at":
+                    str(
+                        conversation["updated_at"]
+                    )
+            },
+            "messages": messages
+        }
+
+    except Exception as error:
+
+        print(
+            "CONVERSATION API ERROR:",
+            type(error).__name__,
+            str(error)
+        )
+
+        return {
+            "ok": False,
+            "error":
+                "Conversation load failed."
+        }
+
+
+# ============================================================
+# DELETE ONE CHAT
+# ============================================================
+
+@api.delete(
+    "/api/history/{conversation_id}"
+)
+async def api_delete_conversation(
+    conversation_id: str,
+    authorization: str = Header(default="")
+):
+
+    conn = None
+
+    try:
+
+        user_id = authenticated_user(
+            authorization
+        )
+
+        if not user_id:
+
+            return {
+                "ok": False,
+                "error": "Login required."
+            }
+
+        conn = get_db()
+
+        with conn.cursor() as cur:
+
+            # -----------------------------------------
+            # CHECK OWNERSHIP
+            # -----------------------------------------
+
+            cur.execute("""
+                SELECT 1
+
+                FROM conversations
+
+                WHERE id = %s
+                  AND user_id = %s
+
+                LIMIT 1
+            """, (
+                conversation_id,
+                user_id
+            ))
+
+            exists = cur.fetchone()
+
+            if not exists:
+
+                return {
+                    "ok": False,
+                    "error":
+                        "Conversation not found."
+                }
+
+            # -----------------------------------------
+            # DELETE MESSAGES
+            # -----------------------------------------
+
+            cur.execute("""
+                DELETE FROM messages
+
+                WHERE conversation_id = %s
+                  AND user_id = %s
+            """, (
+                conversation_id,
+                user_id
+            ))
+
+            # -----------------------------------------
+            # DELETE CONVERSATION
+            # -----------------------------------------
+
+            cur.execute("""
+                DELETE FROM conversations
+
+                WHERE id = %s
+                  AND user_id = %s
+            """, (
+                conversation_id,
+                user_id
+            ))
+
+        conn.commit()
+
+        return {
+            "ok": True,
+            "message": "Chat deleted successfully."
+        }
+
+    except Exception as error:
+
+        if conn:
+            conn.rollback()
+
+        print(
+            "DELETE HISTORY ERROR:",
+            type(error).__name__,
+            str(error)
+        )
+
+        return {
+            "ok": False,
+            "error": "Chat delete failed."
+        }
+
+    finally:
+
+        if conn:
+            conn.close()
+
+
+# ============================================================
+# GET MEMORY
+# ============================================================
+
+@api.get("/api/memory")
+async def api_memory(
+    authorization: str = Header(default="")
+):
+
+    conn = None
+
+    try:
+
+        user_id = authenticated_user(
+            authorization
+        )
+
+        if not user_id:
+
+            return {
+                "ok": False,
+                "error": "Login required."
+            }
+
+        conn = get_db()
+
+        with conn.cursor(
+            cursor_factory=RealDictCursor
+        ) as cur:
+
+            cur.execute("""
+                SELECT
+                    id,
+                    memory_key,
+                    memory_value,
+                    created_at,
+                    updated_at
+
+                FROM memories
+
+                WHERE user_id = %s
+
+                ORDER BY updated_at DESC
+            """, (
+                user_id,
+            ))
+
+            memories = cur.fetchall()
+
+        result = []
+
+        for memory in memories:
+
+            result.append({
+                "id":
+                    memory["id"],
+                "key":
+                    memory["memory_key"],
+                "value":
+                    memory["memory_value"],
+                "created_at":
+                    str(
+                        memory["created_at"]
+                    ),
+                "updated_at":
+                    str(
+                        memory["updated_at"]
+                    )
+            })
+
+        return {
+            "ok": True,
+            "memories": result
+        }
+
+    except Exception as error:
+
+        print(
+            "MEMORY API ERROR:",
+            type(error).__name__,
+            str(error)
+        )
+
+        return {
+            "ok": False,
+            "error": "Memory load failed."
+        }
+
+    finally:
+
+        if conn:
+            conn.close()
+
+
+# ============================================================
+# DELETE ONE MEMORY
+# ============================================================
+
+@api.delete(
+    "/api/memory/{memory_id}"
+)
+async def api_delete_memory(
+    memory_id: int,
+    authorization: str = Header(default="")
+):
+
+    conn = None
+
+    try:
+
+        user_id = authenticated_user(
+            authorization
+        )
+
+        if not user_id:
+
+            return {
+                "ok": False,
+                "error": "Login required."
+            }
+
+        conn = get_db()
+
+        with conn.cursor() as cur:
+
+            cur.execute("""
+                DELETE FROM memories
+
+                WHERE id = %s
+                  AND user_id = %s
+            """, (
+                memory_id,
+                user_id
+            ))
+
+            deleted = cur.rowcount
+
+        conn.commit()
+
+        if deleted == 0:
+
+            return {
+                "ok": False,
+                "error": "Memory not found."
+            }
+
+        return {
+            "ok": True,
+            "message":
+                "Memory deleted successfully."
+        }
+
+    except Exception as error:
+
+        if conn:
+            conn.rollback()
+
+        print(
+            "DELETE MEMORY ERROR:",
+            type(error).__name__,
+            str(error)
+        )
+
+        return {
+            "ok": False,
+            "error":
+                "Memory delete failed."
+        }
+
+    finally:
+
+        if conn:
+            conn.close()
+
+
+# ============================================================
+# CLEAR ALL MEMORY
+# ============================================================
+
+@api.delete("/api/memory")
+async def api_clear_memory(
+    authorization: str = Header(default="")
+):
+
+    conn = None
+
+    try:
+
+        user_id = authenticated_user(
+            authorization
+        )
+
+        if not user_id:
+
+            return {
+                "ok": False,
+                "error": "Login required."
+            }
+
+        conn = get_db()
+
+        with conn.cursor() as cur:
+
+            cur.execute("""
+                DELETE FROM memories
+
+                WHERE user_id = %s
+            """, (
+                user_id,
+            ))
+
+            deleted_count = cur.rowcount
+
+        conn.commit()
+
+        return {
+            "ok": True,
+            "deleted": deleted_count,
+            "message":
+                "All memories cleared."
+        }
+
+    except Exception as error:
+
+        if conn:
+            conn.rollback()
+
+        print(
+            "CLEAR MEMORY ERROR:",
+            type(error).__name__,
+            str(error)
+        )
+
+        return {
+            "ok": False,
+            "error":
+                "Memory clear failed."
+        }
+
+    finally:
+
+        if conn:
+            conn.close()
 # ============================================================
 # AUTHENTICATION HELPER
 # ============================================================
