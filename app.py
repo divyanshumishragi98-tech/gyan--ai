@@ -456,114 +456,74 @@ def save_search_page(
 
         conn.close()
 # ============================================================
-# GYAN AI SEARCH ENGINE — WEB CRAWLER
+# ============================================================
+# GYAN AI SEARCH ENGINE — LINK DISCOVERY
 # ============================================================
 
-def crawl_web_page(url: str):
+def extract_page_links(base_url: str, html: str):
+
+    links = []
+
     try:
-        parsed = urlparse(url)
 
-        if parsed.scheme not in ("http", "https"):
-            return False, "Only HTTP/HTTPS URLs are allowed."
+        for match in re.finditer(
+            r'<a\b[^>]*href=["\']([^"\']+)["\']',
+            html,
+            flags=re.IGNORECASE
+        ):
 
-        request = urllib.request.Request(
-            url,
-            headers={
-                "User-Agent": (
-                    "GyanAI-SearchBot/1.0 "
-                    "(Gyan AI Search Engine)"
-                )
-            }
-        )
+            href = match.group(1).strip()
 
-        with urllib.request.urlopen(
-            request,
-            timeout=15
-        ) as response:
+            if not href:
+                continue
 
-            content_type = (
-                response.headers.get(
-                    "Content-Type",
-                    ""
-                ).lower()
+            if href.startswith((
+                "#",
+                "mailto:",
+                "javascript:",
+                "tel:"
+            )):
+                continue
+
+            absolute_url = urllib.parse.urljoin(
+                base_url,
+                href
             )
 
-            if "text/html" not in content_type:
-                return False, "Page is not HTML."
+            parsed = urlparse(absolute_url)
 
-            raw_data = response.read(1_000_000)
+            if parsed.scheme not in (
+                "http",
+                "https"
+            ):
+                continue
 
-        html = raw_data.decode(
-            "utf-8",
-            errors="ignore"
+            clean_url = (
+                f"{parsed.scheme}://"
+                f"{parsed.netloc}"
+                f"{parsed.path}"
+            )
+
+            if parsed.query:
+                clean_url += f"?{parsed.query}"
+
+            if clean_url not in links:
+                links.append(clean_url)
+
+            if len(links) >= 50:
+                break
+
+    except Exception as error:
+
+        print(
+            "LINK EXTRACTION ERROR:",
+            type(error).__name__,
+            str(error)
         )
 
-        # Remove scripts, styles and HTML tags
-        html = re.sub(
-            r"<script\b[^>]*>.*?</script>",
-            " ",
-            html,
-            flags=re.IGNORECASE | re.DOTALL
-        )
+    return links
 
-        html = re.sub(
-            r"<style\b[^>]*>.*?</style>",
-            " ",
-            html,
-            flags=re.IGNORECASE | re.DOTALL
-        )
 
-        title_match = re.search(
-            r"<title[^>]*>(.*?)</title>",
-            html,
-            flags=re.IGNORECASE | re.DOTALL
-        )
-
-        title = (
-            title_match.group(1)
-            if title_match
-            else ""
-        )
-
-        description_match = re.search(
-            r'<meta[^>]+name=["\']description["\'][^>]+content=["\'](.*?)["\']',
-            html,
-            flags=re.IGNORECASE | re.DOTALL
-        )
-
-        description = (
-            description_match.group(1)
-            if description_match
-            else ""
-        )
-
-        text = re.sub(
-            r"<[^>]+>",
-            " ",
-            html
-        )
-
-        text = clean_web_text(text)
-
-        if not text:
-            return False, "No readable text found."
-
-        save_search_page(
-            url=url,
-            title=title,
-            content=text,
-            description=description
-        )
-
-        return True, {
-            "url": url,
-            "title": clean_web_text(title),
-            "characters": len(text)
-        }
-
-    except urllib.error.HTTPError as error:
-
-        return False, f"HTTP error: {error.code}"
 # ============================================================
 # GYAN AI SEARCH ENGINE — WEB CRAWLER
 # ============================================================
@@ -610,7 +570,7 @@ def crawl_web_page(url: str):
         )
 
         # ----------------------------------------------------
-        # DISCOVER LINKS BEFORE CLEANING HTML
+        # DISCOVER LINKS
         # ----------------------------------------------------
 
         discovered_links = extract_page_links(
@@ -685,11 +645,10 @@ def crawl_web_page(url: str):
         text = clean_web_text(text)
 
         if not text:
-
             return False, "No readable text found."
 
         # ----------------------------------------------------
-        # SAVE PAGE TO GYAN AI INDEX
+        # SAVE TO GYAN AI INDEX
         # ----------------------------------------------------
 
         save_search_page(
@@ -698,10 +657,6 @@ def crawl_web_page(url: str):
             content=text,
             description=description
         )
-
-        # ----------------------------------------------------
-        # RESULT
-        # ----------------------------------------------------
 
         return True, {
             "url": url,
@@ -727,85 +682,23 @@ def crawl_web_page(url: str):
         )
 
         return False, "Crawler failed."
-===========================================
+
+
+# ============================================================
 # GYAN AI SEARCH ENGINE — SEARCH INDEX
 # ============================================================
 
 def search_gyan_index(query: str, limit: int = 10):
-# ============================================================
-# GYAN AI SEARCH ENGINE — LINK DISCOVERY
-# ============================================================
 
-def extract_page_links(base_url: str, html: str):
-
-    links = []
-
-    try:
-
-        for match in re.finditer(
-            r'<a\b[^>]*href=["\']([^"\']+)["\']',
-            html,
-            flags=re.IGNORECASE
-        ):
-
-            href = match.group(1).strip()
-
-            if not href:
-                continue
-
-            if href.startswith((
-                "#",
-                "mailto:",
-                "javascript:",
-                "tel:"
-            )):
-                continue
-
-            absolute_url = urllib.parse.urljoin(
-                base_url,
-                href
-            )
-
-            parsed = urlparse(absolute_url)
-
-            if parsed.scheme not in (
-                "http",
-                "https"
-            ):
-                continue
-
-            # Remove fragments
-            clean_url = (
-                f"{parsed.scheme}://"
-                f"{parsed.netloc}"
-                f"{parsed.path}"
-            )
-
-            if parsed.query:
-                clean_url += f"?{parsed.query}"
-
-            if clean_url not in links:
-                links.append(clean_url)
-
-            if len(links) >= 50:
-                break
-
-    except Exception as error:
-
-        print(
-            "LINK EXTRACTION ERROR:",
-            type(error).__name__,
-            str(error)
-        )
-
-    return links
-   
     query = clean_web_text(query)
 
     if not query or not DATABASE_URL:
         return []
 
-    limit = max(1, min(int(limit), 20))
+    limit = max(
+        1,
+        min(int(limit), 20)
+    )
 
     conn = get_db()
 
@@ -869,7 +762,9 @@ def extract_page_links(base_url: str, html: str):
 
         return []
 
-                finally:
+    finally:
+
+        conn.close()
             
 # ============================================================
 # USER MANAGEMENT
