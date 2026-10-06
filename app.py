@@ -579,6 +579,84 @@ def crawl_web_page(url: str):
 
         return False, "Crawler failed."
 # ============================================================
+# GYAN AI SEARCH ENGINE — SEARCH INDEX
+# ============================================================
+
+def search_gyan_index(query: str, limit: int = 10):
+
+    query = clean_web_text(query)
+
+    if not query or not DATABASE_URL:
+        return []
+
+    limit = max(1, min(int(limit), 20))
+
+    conn = get_db()
+
+    try:
+
+        with conn.cursor(
+            cursor_factory=RealDictCursor
+        ) as cur:
+
+            cur.execute("""
+                SELECT
+                    id,
+                    url,
+                    title,
+                    description,
+                    domain,
+                    LEFT(content, 500) AS snippet,
+                    crawled_at
+                FROM gyan_search_pages
+                WHERE
+                    to_tsvector(
+                        'simple',
+                        COALESCE(title, '') || ' ' ||
+                        COALESCE(description, '') || ' ' ||
+                        COALESCE(content, '')
+                    )
+                    @@ websearch_to_tsquery(
+                        'simple',
+                        %s
+                    )
+                ORDER BY
+                    ts_rank(
+                        to_tsvector(
+                            'simple',
+                            COALESCE(title, '') || ' ' ||
+                            COALESCE(description, '') || ' ' ||
+                            COALESCE(content, '')
+                        ),
+                        websearch_to_tsquery(
+                            'simple',
+                            %s
+                        )
+                    ) DESC,
+                    crawled_at DESC
+                LIMIT %s
+            """, (
+                query,
+                query,
+                limit
+            ))
+
+            return cur.fetchall()
+
+    except Exception as error:
+
+        print(
+            "GYAN SEARCH ERROR:",
+            type(error).__name__,
+            str(error)
+        )
+
+        return []
+
+    finally:
+
+        conn.close()
+# ============================================================
 # USER MANAGEMENT
 # ============================================================
 def hash_password(password: str, salt: str) -> str:
