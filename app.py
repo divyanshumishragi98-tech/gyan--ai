@@ -196,7 +196,31 @@ def init_database():
             ON gyan_search_pages
             USING GIN (to_tsvector('simple', content))
         """)
+        # ----------------------------------------------------
+        # SEARCH CRAWL QUEUE
+        # ----------------------------------------------------
 
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS gyan_crawl_queue (
+                id BIGSERIAL PRIMARY KEY,
+                url TEXT UNIQUE NOT NULL,
+                status TEXT DEFAULT 'pending',
+                depth INTEGER DEFAULT 0,
+                priority INTEGER DEFAULT 0,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                processed_at TIMESTAMPTZ
+            )
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_gyan_crawl_queue_status
+            ON gyan_crawl_queue(status, priority DESC, id)
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_gyan_crawl_queue_depth
+            ON gyan_crawl_queue(depth)
+        """)
         # ----------------------------------------------------
         # USERS
         # ----------------------------------------------------
