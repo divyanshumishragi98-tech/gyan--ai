@@ -548,6 +548,7 @@ def extract_page_links(base_url: str, html: str):
     return links
 
 
+# ===========================================================
 # ============================================================
 # GYAN AI SEARCH ENGINE — WEB CRAWLER
 # ============================================================
@@ -584,130 +585,18 @@ def crawl_web_page(url: str):
             )
 
             if "text/html" not in content_type:
+
                 return False, "Page is not HTML."
 
-            raw_data = response.read(1_000_000)
+            raw_data = response.read(
+                1_000_000
+            )
 
         html = raw_data.decode(
             "utf-8",
             errors="ignore"
         )
-# ============================================================
-# GYAN AI SEARCH ENGINE — QUEUE CRAWLER
-# ============================================================
 
-def crawl_queued_pages(
-    max_pages: int = 10,
-    max_depth: int = 2
-):
-
-    max_pages = max(
-        1,
-        min(int(max_pages), 50)
-    )
-
-    max_depth = max(
-        0,
-        min(int(max_depth), 5)
-    )
-
-    crawled_count = 0
-    failed_count = 0
-
-    while crawled_count < max_pages:
-
-        job = get_next_crawl_job()
-
-        if not job:
-            break
-
-        job_id = job["id"]
-        url = job["url"]
-        depth = int(job["depth"])
-
-        try:
-
-            success, result = crawl_web_page(url)
-
-            if success:
-
-                crawled_count += 1
-
-                finish_crawl_job(
-                    job_id,
-                    success=True
-                )
-
-                discovered_links = (
-                    result.get("links", [])
-                    if isinstance(result, dict)
-                    else []
-                )
-
-                # ------------------------------------------------
-                # ADD DISCOVERED LINKS TO QUEUE
-                # ------------------------------------------------
-
-                if depth < max_depth:
-
-                    for link in discovered_links:
-
-                        queue_crawl_url(
-                            url=link,
-                            depth=depth + 1,
-                            priority=max(
-                                0,
-                                100 - (
-                                    (depth + 1) * 10
-                                )
-                            )
-                        )
-
-                print(
-                    "CRAWLED:",
-                    url
-                )
-
-            else:
-
-                failed_count += 1
-
-                finish_crawl_job(
-                    job_id,
-                    success=False
-                )
-
-                print(
-                    "CRAWL FAILED:",
-                    url,
-                    result
-                )
-
-        except Exception as error:
-
-            failed_count += 1
-
-            finish_crawl_job(
-                job_id,
-                success=False
-            )
-
-            print(
-                "QUEUE CRAWLER ERROR:",
-                type(error).__name__,
-                str(error)
-            )
-
-        # --------------------------------------------------------
-        # SMALL DELAY BETWEEN REQUESTS
-        # --------------------------------------------------------
-
-        time.sleep(1)
-
-    return {
-        "crawled": crawled_count,
-        "failed": failed_count
-    }
         # ----------------------------------------------------
         # DISCOVER LINKS
         # ----------------------------------------------------
@@ -781,13 +670,16 @@ def crawl_queued_pages(
             html
         )
 
-        text = clean_web_text(text)
+        text = clean_web_text(
+            text
+        )
 
         if not text:
+
             return False, "No readable text found."
 
         # ----------------------------------------------------
-        # SAVE TO GYAN AI INDEX
+        # SAVE PAGE TO GYAN AI INDEX
         # ----------------------------------------------------
 
         save_search_page(
@@ -822,6 +714,225 @@ def crawl_queued_pages(
 
         return False, "Crawler failed."
 
+
+# ============================================================
+# GYAN AI SEARCH ENGINE — QUEUE CRAWLER
+# ============================================================
+
+def crawl_queued_pages(
+    max_pages: int = 10,
+    max_depth: int = 2
+):
+
+    max_pages = max(
+        1,
+        min(int(max_pages), 50)
+    )
+
+    max_depth = max(
+        0,
+        min(int(max_depth), 5)
+    )
+
+    crawled_count = 0
+    failed_count = 0
+
+    while crawled_count < max_pages:
+
+        job = get_next_crawl_job()
+
+        if not job:
+
+            break
+
+        job_id = job["id"]
+        url = job["url"]
+        depth = int(
+            job["depth"]
+        )
+
+        try:
+
+            success, result = crawl_web_page(
+                url
+            )
+
+            if success:
+
+                crawled_count += 1
+
+                finish_crawl_job(
+                    job_id,
+                    success=True
+                )
+
+                discovered_links = (
+                    result.get(
+                        "links",
+                        []
+                    )
+                    if isinstance(
+                        result,
+                        dict
+                    )
+                    else []
+                )
+
+                # ------------------------------------------------
+                # ADD DISCOVERED LINKS TO QUEUE
+                # ------------------------------------------------
+
+                if depth < max_depth:
+
+                    for link in discovered_links:
+
+                        queue_crawl_url(
+                            url=link,
+                            depth=depth + 1,
+                            priority=max(
+                                0,
+                                100 - (
+                                    (depth + 1) * 10
+                                )
+                            )
+                        )
+
+                print(
+                    "CRAWLED:",
+                    url
+                )
+
+            else:
+
+                failed_count += 1
+
+                finish_crawl_job(
+                    job_id,
+                    success=False
+                )
+
+                print(
+                    "CRAWL FAILED:",
+                    url,
+                    result
+                )
+
+        except Exception as error:
+
+            failed_count += 1
+
+            finish_crawl_job(
+                job_id,
+                success=False
+            )
+
+            print(
+                "QUEUE CRAWLER ERROR:",
+                type(error).__name__,
+                str(error)
+            )
+
+        # --------------------------------------------------------
+        # DELAY BETWEEN REQUESTS
+        # --------------------------------------------------------
+
+        time.sleep(
+            1
+        )
+
+    return {
+        "crawled": crawled_count,
+        "failed": failed_count
+    }
+
+
+# ============================================================
+# GYAN AI SEARCH ENGINE — SEARCH INDEX
+# ============================================================
+
+def search_gyan_index(
+    query: str,
+    limit: int = 10
+):
+
+    query = clean_web_text(
+        query
+    )
+
+    if not query or not DATABASE_URL:
+
+        return []
+
+    limit = max(
+        1,
+        min(int(limit), 20)
+    )
+
+    conn = get_db()
+
+    try:
+
+        with conn.cursor(
+            cursor_factory=RealDictCursor
+        ) as cur:
+
+            cur.execute("""
+                SELECT
+                    id,
+                    url,
+                    title,
+                    description,
+                    domain,
+                    LEFT(content, 500) AS snippet,
+                    crawled_at
+                FROM gyan_search_pages
+                WHERE
+                    to_tsvector(
+                        'simple',
+                        COALESCE(title, '') || ' ' ||
+                        COALESCE(description, '') || ' ' ||
+                        COALESCE(content, '')
+                    )
+                    @@ websearch_to_tsquery(
+                        'simple',
+                        %s
+                    )
+                ORDER BY
+                    ts_rank(
+                        to_tsvector(
+                            'simple',
+                            COALESCE(title, '') || ' ' ||
+                            COALESCE(description, '') || ' ' ||
+                            COALESCE(content, '')
+                        ),
+                        websearch_to_tsquery(
+                            'simple',
+                            %s
+                        )
+                    ) DESC,
+                    crawled_at DESC
+                LIMIT %s
+            """, (
+                query,
+                query,
+                limit
+            ))
+
+            return cur.fetchall()
+
+    except Exception as error:
+
+        print(
+            "GYAN SEARCH ERROR:",
+            type(error).__name__,
+            str(error)
+        )
+
+        return []
+
+    finally:
+
+        conn.close()
 
 # ============================================================
 # GYAN AI SEARCH ENGINE — SEARCH INDEX
