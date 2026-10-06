@@ -789,7 +789,194 @@ def search_gyan_index(query: str, limit: int = 10):
     finally:
 
         conn.close()
-            
+
+# ============================================================
+# GYAN AI SEARCH ENGINE — CRAWL QUEUE
+# ============================================================
+
+def queue_crawl_url(
+    url: str,
+    depth: int = 0,
+    priority: int = 0
+):
+
+    if not DATABASE_URL:
+        return False
+
+    url = clean_web_text(url)
+
+    if not url:
+        return False
+
+    parsed = urlparse(url)
+
+    if parsed.scheme not in ("http", "https"):
+        return False
+
+    if len(url) > 2048:
+        return False
+
+    try:
+
+        conn = get_db()
+
+        try:
+
+            with conn.cursor() as cur:
+
+                cur.execute("""
+                    INSERT INTO gyan_crawl_queue
+                    (
+                        url,
+                        status,
+                        depth,
+                        priority
+                    )
+
+                    VALUES (
+                        %s,
+                        'pending',
+                        %s,
+                        %s
+                    )
+
+                    ON CONFLICT (url)
+                    DO NOTHING
+                """, (
+                    url,
+                    max(0, int(depth)),
+                    int(priority)
+                ))
+
+            conn.commit()
+
+            return True
+
+        finally:
+
+            conn.close()
+
+    except Exception as error:
+
+        print(
+            "QUEUE URL ERROR:",
+            type(error).__name__,
+            str(error)
+        )
+
+        return False
+
+
+def get_next_crawl_job():
+
+    if not DATABASE_URL:
+        return None
+
+    conn = get_db()
+
+    try:
+
+        with conn.cursor(
+            cursor_factory=RealDictCursor
+        ) as cur:
+
+            cur.execute("""
+                SELECT
+                    id,
+                    url,
+                    depth,
+                    priority
+                FROM gyan_crawl_queue
+                WHERE status = 'pending'
+                ORDER BY
+                    priority DESC,
+                    depth ASC,
+                    id ASC
+                FOR UPDATE SKIP LOCKED
+                LIMIT 1
+            """)
+
+            job = cur.fetchone()
+
+            if not job:
+                conn.commit()
+                return None
+
+            cur.execute("""
+                UPDATE gyan_crawl_queue
+                SET status = 'crawling'
+                WHERE id = %s
+            """, (
+                job["id"],
+            ))
+
+            conn.commit()
+
+            return dict(job)
+
+    except Exception as error:
+
+        conn.rollback()
+
+        print(
+            "GET CRAWL JOB ERROR:",
+            type(error).__name__,
+            str(error)
+        )
+
+        return None
+
+    finally:
+
+        conn.close()
+
+
+def finish_crawl_job(
+    job_id: int,
+    success: bool = True
+):
+
+    if not DATABASE_URL:
+        return
+
+    status = (
+        "done"
+        if success
+        else "failed"
+    )
+
+    try:
+
+        conn = get_db()
+
+        try:
+
+            with conn.cursor() as cur:
+
+                cur.execute("""
+                    UPDATE gyan_crawl_queue
+                    SET
+                        status = %s,
+                        processed_at = NOW()
+                    WHERE id = %s
+                """, (
+                    status,
+                    job_id
+                ))
+
+            conn.commit()
+
+        finally:
+
+            conn.close()
+
+    except Exception as error:
+
+        print(
+            "FINISH CRAWL JOB ERROR:",
+            type(error).__name__,
+            str(error)
+        )
 # ============================================================
 # USER MANAGEMENT
 # ============================================================
