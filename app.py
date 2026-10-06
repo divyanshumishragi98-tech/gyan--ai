@@ -148,22 +148,6 @@ def get_db():
 # ============================================================
 
 def init_database():
-
-    if not DATABASE_URL:
-
-        print(
-            "WARNING: DATABASE_URL is not configured."
-        )
-
-        return
-
-    conn = None
-
-    try:
-
-        conn = get_db()
-
-        cur = conn.cursor()
     cur.execute("""
         CREATE TABLE IF NOT EXISTS gyan_search_pages (
             id BIGSERIAL PRIMARY KEY,
@@ -193,6 +177,70 @@ def init_database():
         ON gyan_search_pages
         USING GIN (to_tsvector('simple', content))
     """)
+    if not DATABASE_URL:
+
+        print(
+            "WARNING: DATABASE_URL is not configured."
+        )
+
+        return
+
+    conn = None
+
+    try:
+
+        conn = get_db()
+
+        cur = conn.cursor()
+    def clean_web_text(text: str) -> str:
+    text = re.sub(r"\s+", " ", text or "")
+    return text.strip()
+
+
+def save_search_page(
+    url: str,
+    title: str = "",
+    content: str = "",
+    description: str = "",
+    language: str = "unknown"
+):
+    if not DATABASE_URL:
+        return
+
+    parsed = urlparse(url)
+    domain = parsed.netloc.lower()
+
+    content = clean_web_text(content)
+    title = clean_web_text(title)
+    description = clean_web_text(description)
+
+    conn = get_db()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO gyan_search_pages
+                (url, title, content, domain, description, language)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (url)
+                DO UPDATE SET
+                    title = EXCLUDED.title,
+                    content = EXCLUDED.content,
+                    domain = EXCLUDED.domain,
+                    description = EXCLUDED.description,
+                    language = EXCLUDED.language,
+                    updated_at = NOW()
+            """, (
+                url,
+                title,
+                content,
+                domain,
+                description,
+                language
+            ))
+
+        conn.commit()
+    finally:
+        conn.close()
         # ----------------------------------------------------
         # USERS
         # ----------------------------------------------------
