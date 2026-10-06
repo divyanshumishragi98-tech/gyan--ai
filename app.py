@@ -140,43 +140,12 @@ def get_db():
         user=unquote(parsed.username or ""),
         password=unquote(parsed.password or ""),
         connect_timeout=10
-    )
-
-
-# ============================================================
+    # ============================================================
 # DATABASE INITIALIZATION
 # ============================================================
 
 def init_database():
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS gyan_search_pages (
-            id BIGSERIAL PRIMARY KEY,
-            url TEXT UNIQUE NOT NULL,
-            title TEXT DEFAULT '',
-            content TEXT DEFAULT '',
-            domain TEXT DEFAULT '',
-            description TEXT DEFAULT '',
-            language TEXT DEFAULT 'unknown',
-            crawled_at TIMESTAMPTZ DEFAULT NOW(),
-            updated_at TIMESTAMPTZ DEFAULT NOW()
-        )
-    """)
 
-    cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_gyan_search_domain
-        ON gyan_search_pages(domain)
-    """)
-
-    cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_gyan_search_crawled_at
-        ON gyan_search_pages(crawled_at DESC)
-    """)
-
-    cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_gyan_search_content
-        ON gyan_search_pages
-        USING GIN (to_tsvector('simple', content))
-    """)
     if not DATABASE_URL:
 
         print(
@@ -192,55 +161,41 @@ def init_database():
         conn = get_db()
 
         cur = conn.cursor()
-    def clean_web_text(text: str) -> str:
-    text = re.sub(r"\s+", " ", text or "")
-    return text.strip()
 
+        # ----------------------------------------------------
+        # SEARCH ENGINE PAGES
+        # ----------------------------------------------------
 
-def save_search_page(
-    url: str,
-    title: str = "",
-    content: str = "",
-    description: str = "",
-    language: str = "unknown"
-):
-    if not DATABASE_URL:
-        return
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS gyan_search_pages (
+                id BIGSERIAL PRIMARY KEY,
+                url TEXT UNIQUE NOT NULL,
+                title TEXT DEFAULT '',
+                content TEXT DEFAULT '',
+                domain TEXT DEFAULT '',
+                description TEXT DEFAULT '',
+                language TEXT DEFAULT 'unknown',
+                crawled_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
 
-    parsed = urlparse(url)
-    domain = parsed.netloc.lower()
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_gyan_search_domain
+            ON gyan_search_pages(domain)
+        """)
 
-    content = clean_web_text(content)
-    title = clean_web_text(title)
-    description = clean_web_text(description)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_gyan_search_crawled_at
+            ON gyan_search_pages(crawled_at DESC)
+        """)
 
-    conn = get_db()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO gyan_search_pages
-                (url, title, content, domain, description, language)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                ON CONFLICT (url)
-                DO UPDATE SET
-                    title = EXCLUDED.title,
-                    content = EXCLUDED.content,
-                    domain = EXCLUDED.domain,
-                    description = EXCLUDED.description,
-                    language = EXCLUDED.language,
-                    updated_at = NOW()
-            """, (
-                url,
-                title,
-                content,
-                domain,
-                description,
-                language
-            ))
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_gyan_search_content
+            ON gyan_search_pages
+            USING GIN (to_tsvector('simple', content))
+        """)
 
-        conn.commit()
-    finally:
-        conn.close()
         # ----------------------------------------------------
         # USERS
         # ----------------------------------------------------
@@ -327,18 +282,28 @@ def save_search_page(
                     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-# ----------------------------------------------------
+
+        # ----------------------------------------------------
         # MEMORIES
         # ----------------------------------------------------
 
         cur.execute("""
             CREATE TABLE IF NOT EXISTS memories (
+
                 id BIGSERIAL PRIMARY KEY,
+
                 user_id TEXT NOT NULL,
+
                 memory_key TEXT NOT NULL,
+
                 memory_value TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+                created_at
+                    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+                updated_at
+                    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
                 UNIQUE(user_id, memory_key)
             )
         """)
@@ -348,22 +313,26 @@ def save_search_page(
         # ----------------------------------------------------
 
         cur.execute("""
-            CREATE INDEX IF NOT EXISTS idx_conversations_user_updated
+            CREATE INDEX IF NOT EXISTS
+            idx_conversations_user_updated
             ON conversations(user_id, updated_at DESC)
         """)
 
         cur.execute("""
-            CREATE INDEX IF NOT EXISTS idx_messages_conversation_id
+            CREATE INDEX IF NOT EXISTS
+            idx_messages_conversation_id
             ON messages(conversation_id, id)
         """)
 
         cur.execute("""
-            CREATE INDEX IF NOT EXISTS idx_messages_user_id
+            CREATE INDEX IF NOT EXISTS
+            idx_messages_user_id
             ON messages(user_id, id)
         """)
 
         cur.execute("""
-            CREATE INDEX IF NOT EXISTS idx_memories_user_updated
+            CREATE INDEX IF NOT EXISTS
+            idx_memories_user_updated
             ON memories(user_id, updated_at DESC)
         """)
 
@@ -374,6 +343,7 @@ def save_search_page(
         print("=" * 60)
         print("GYAN AI DATABASE READY")
         print("PostgreSQL connected successfully.")
+        print("Search engine database ready.")
         print("=" * 60)
 
     except Exception as error:
@@ -391,6 +361,99 @@ def save_search_page(
             conn.close()
 
 
+# ============================================================
+# SEARCH ENGINE — TEXT CLEANER
+# ============================================================
+
+def clean_web_text(text: str) -> str:
+
+    text = re.sub(
+        r"\s+",
+        " ",
+        text or ""
+    )
+
+    return text.strip()
+
+
+# ============================================================
+# SEARCH ENGINE — SAVE PAGE
+# ============================================================
+
+def save_search_page(
+    url: str,
+    title: str = "",
+    content: str = "",
+    description: str = "",
+    language: str = "unknown"
+):
+
+    if not DATABASE_URL:
+        return
+
+    parsed = urlparse(url)
+
+    domain = parsed.netloc.lower()
+
+    content = clean_web_text(content)
+    title = clean_web_text(title)
+    description = clean_web_text(description)
+
+    conn = get_db()
+
+    try:
+
+        with conn.cursor() as cur:
+
+            cur.execute("""
+                INSERT INTO gyan_search_pages
+                (
+                    url,
+                    title,
+                    content,
+                    domain,
+                    description,
+                    language
+                )
+
+                VALUES (
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s
+                )
+
+                ON CONFLICT (url)
+
+                DO UPDATE SET
+
+                    title = EXCLUDED.title,
+
+                    content = EXCLUDED.content,
+
+                    domain = EXCLUDED.domain,
+
+                    description = EXCLUDED.description,
+
+                    language = EXCLUDED.language,
+
+                    updated_at = NOW()
+            """, (
+                url,
+                title,
+                content,
+                domain,
+                description,
+                language
+            ))
+
+        conn.commit()
+
+    finally:
+
+        conn.close()
 # ============================================================
 # USER MANAGEMENT
 # ============================================================
