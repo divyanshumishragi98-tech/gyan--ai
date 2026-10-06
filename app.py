@@ -564,6 +564,155 @@ def crawl_web_page(url: str):
     except urllib.error.HTTPError as error:
 
         return False, f"HTTP error: {error.code}"
+# ============================================================
+# GYAN AI SEARCH ENGINE — WEB CRAWLER
+# ============================================================
+
+def crawl_web_page(url: str):
+
+    try:
+
+        parsed = urlparse(url)
+
+        if parsed.scheme not in ("http", "https"):
+            return False, "Only HTTP/HTTPS URLs are allowed."
+
+        request = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": (
+                    "GyanAI-SearchBot/1.0 "
+                    "(Gyan AI Search Engine)"
+                )
+            }
+        )
+
+        with urllib.request.urlopen(
+            request,
+            timeout=15
+        ) as response:
+
+            content_type = (
+                response.headers.get(
+                    "Content-Type",
+                    ""
+                ).lower()
+            )
+
+            if "text/html" not in content_type:
+                return False, "Page is not HTML."
+
+            raw_data = response.read(1_000_000)
+
+        html = raw_data.decode(
+            "utf-8",
+            errors="ignore"
+        )
+
+        # ----------------------------------------------------
+        # DISCOVER LINKS BEFORE CLEANING HTML
+        # ----------------------------------------------------
+
+        discovered_links = extract_page_links(
+            url,
+            html
+        )
+
+        # ----------------------------------------------------
+        # REMOVE SCRIPTS
+        # ----------------------------------------------------
+
+        html = re.sub(
+            r"<script\b[^>]*>.*?</script>",
+            " ",
+            html,
+            flags=re.IGNORECASE | re.DOTALL
+        )
+
+        # ----------------------------------------------------
+        # REMOVE STYLES
+        # ----------------------------------------------------
+
+        html = re.sub(
+            r"<style\b[^>]*>.*?</style>",
+            " ",
+            html,
+            flags=re.IGNORECASE | re.DOTALL
+        )
+
+        # ----------------------------------------------------
+        # TITLE
+        # ----------------------------------------------------
+
+        title_match = re.search(
+            r"<title[^>]*>(.*?)</title>",
+            html,
+            flags=re.IGNORECASE | re.DOTALL
+        )
+
+        title = (
+            title_match.group(1)
+            if title_match
+            else ""
+        )
+
+        # ----------------------------------------------------
+        # DESCRIPTION
+        # ----------------------------------------------------
+
+        description_match = re.search(
+            r'<meta[^>]+name=["\']description["\'][^>]+content=["\'](.*?)["\']',
+            html,
+            flags=re.IGNORECASE | re.DOTALL
+        )
+
+        description = (
+            description_match.group(1)
+            if description_match
+            else ""
+        )
+
+        # ----------------------------------------------------
+        # EXTRACT TEXT
+        # ----------------------------------------------------
+
+        text = re.sub(
+            r"<[^>]+>",
+            " ",
+            html
+        )
+
+        text = clean_web_text(text)
+
+        if not text:
+
+            return False, "No readable text found."
+
+        # ----------------------------------------------------
+        # SAVE PAGE TO GYAN AI INDEX
+        # ----------------------------------------------------
+
+        save_search_page(
+            url=url,
+            title=title,
+            content=text,
+            description=description
+        )
+
+        # ----------------------------------------------------
+        # RESULT
+        # ----------------------------------------------------
+
+        return True, {
+            "url": url,
+            "title": clean_web_text(title),
+            "characters": len(text),
+            "links": discovered_links
+        }
+
+    except urllib.error.HTTPError as error:
+
+        return False, f"HTTP error: {error.code}"
 
     except urllib.error.URLError as error:
 
@@ -578,8 +727,7 @@ def crawl_web_page(url: str):
         )
 
         return False, "Crawler failed."
-
-        # ============================================================
+===========================================
 # GYAN AI SEARCH ENGINE — SEARCH INDEX
 # ============================================================
 
