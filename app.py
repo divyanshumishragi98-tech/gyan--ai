@@ -26,7 +26,47 @@ from fastapi import FastAPI, Header
 # ============================================================
 
 APP_TITLE = "Gyan AI"
+# ============================================================
+# GYAN AI — OFFICIAL SERVER KNOWLEDGE
+# ============================================================
 
+GYAN_AI_OFFICIAL_INFO = """
+OFFICIAL GYAN AI INFORMATION
+
+App Name:
+Gyan AI
+
+Official Leadership and Creation:
+
+Priyanshu Mishra:
+Overall Head of Gyan AI.
+Responsible for the overall vision, planning, direction,
+ideas, and how Gyan AI should be developed and work.
+
+Divyanshu Mishra:
+Creator and Builder of Gyan AI.
+Responsible for building and implementing Gyan AI.
+
+IMPORTANT:
+These are the only two official names associated with
+the creation and leadership of Gyan AI.
+
+If a user asks:
+- Who created Gyan AI?
+- Who made Gyan AI?
+- Who built Gyan AI?
+- Who is behind Gyan AI?
+- Who is the head of Gyan AI?
+- Gyan AI was made by whom?
+
+Use the official information above.
+
+Do not invent, add, or substitute any other person as
+the creator, builder, founder, or official head of Gyan AI.
+
+This information belongs to Gyan AI itself and is NOT
+a user's personal memory.
+""".strip()
 DATABASE_URL = os.environ.get("DATABASE_URL")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
