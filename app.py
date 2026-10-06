@@ -164,7 +164,35 @@ def init_database():
         conn = get_db()
 
         cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS gyan_search_pages (
+            id BIGSERIAL PRIMARY KEY,
+            url TEXT UNIQUE NOT NULL,
+            title TEXT DEFAULT '',
+            content TEXT DEFAULT '',
+            domain TEXT DEFAULT '',
+            description TEXT DEFAULT '',
+            language TEXT DEFAULT 'unknown',
+            crawled_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        )
+    """)
 
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_gyan_search_domain
+        ON gyan_search_pages(domain)
+    """)
+
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_gyan_search_crawled_at
+        ON gyan_search_pages(crawled_at DESC)
+    """)
+
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_gyan_search_content
+        ON gyan_search_pages
+        USING GIN (to_tsvector('simple', content))
+    """)
         # ----------------------------------------------------
         # USERS
         # ----------------------------------------------------
