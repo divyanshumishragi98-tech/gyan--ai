@@ -18,7 +18,7 @@ import uvicorn
 from psycopg2.extras import RealDictCursor
 from google import genai
 from fastapi import FastAPI, Header
-
+import urllib.parse
 # ============================================================
 #                 GYAN AI V13.5
 #       POSTGRESQL + LONG-TERM MEMORY + CHAT HISTORY
@@ -583,7 +583,74 @@ def crawl_web_page(url: str):
 # ============================================================
 
 def search_gyan_index(query: str, limit: int = 10):
+# ============================================================
+# GYAN AI SEARCH ENGINE — LINK DISCOVERY
+# ============================================================
 
+def extract_page_links(base_url: str, html: str):
+
+    links = []
+
+    try:
+
+        for match in re.finditer(
+            r'<a\b[^>]*href=["\']([^"\']+)["\']',
+            html,
+            flags=re.IGNORECASE
+        ):
+
+            href = match.group(1).strip()
+
+            if not href:
+                continue
+
+            if href.startswith((
+                "#",
+                "mailto:",
+                "javascript:",
+                "tel:"
+            )):
+                continue
+
+            absolute_url = urllib.parse.urljoin(
+                base_url,
+                href
+            )
+
+            parsed = urlparse(absolute_url)
+
+            if parsed.scheme not in (
+                "http",
+                "https"
+            ):
+                continue
+
+            # Remove fragments
+            clean_url = (
+                f"{parsed.scheme}://"
+                f"{parsed.netloc}"
+                f"{parsed.path}"
+            )
+
+            if parsed.query:
+                clean_url += f"?{parsed.query}"
+
+            if clean_url not in links:
+                links.append(clean_url)
+
+            if len(links) >= 50:
+                break
+
+    except Exception as error:
+
+        print(
+            "LINK EXTRACTION ERROR:",
+            type(error).__name__,
+            str(error)
+        )
+
+    return links
+   
     query = clean_web_text(query)
 
     if not query or not DATABASE_URL:
