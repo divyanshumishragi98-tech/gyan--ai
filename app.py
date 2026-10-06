@@ -592,7 +592,122 @@ def crawl_web_page(url: str):
             "utf-8",
             errors="ignore"
         )
+# ============================================================
+# GYAN AI SEARCH ENGINE — QUEUE CRAWLER
+# ============================================================
 
+def crawl_queued_pages(
+    max_pages: int = 10,
+    max_depth: int = 2
+):
+
+    max_pages = max(
+        1,
+        min(int(max_pages), 50)
+    )
+
+    max_depth = max(
+        0,
+        min(int(max_depth), 5)
+    )
+
+    crawled_count = 0
+    failed_count = 0
+
+    while crawled_count < max_pages:
+
+        job = get_next_crawl_job()
+
+        if not job:
+            break
+
+        job_id = job["id"]
+        url = job["url"]
+        depth = int(job["depth"])
+
+        try:
+
+            success, result = crawl_web_page(url)
+
+            if success:
+
+                crawled_count += 1
+
+                finish_crawl_job(
+                    job_id,
+                    success=True
+                )
+
+                discovered_links = (
+                    result.get("links", [])
+                    if isinstance(result, dict)
+                    else []
+                )
+
+                # ------------------------------------------------
+                # ADD DISCOVERED LINKS TO QUEUE
+                # ------------------------------------------------
+
+                if depth < max_depth:
+
+                    for link in discovered_links:
+
+                        queue_crawl_url(
+                            url=link,
+                            depth=depth + 1,
+                            priority=max(
+                                0,
+                                100 - (
+                                    (depth + 1) * 10
+                                )
+                            )
+                        )
+
+                print(
+                    "CRAWLED:",
+                    url
+                )
+
+            else:
+
+                failed_count += 1
+
+                finish_crawl_job(
+                    job_id,
+                    success=False
+                )
+
+                print(
+                    "CRAWL FAILED:",
+                    url,
+                    result
+                )
+
+        except Exception as error:
+
+            failed_count += 1
+
+            finish_crawl_job(
+                job_id,
+                success=False
+            )
+
+            print(
+                "QUEUE CRAWLER ERROR:",
+                type(error).__name__,
+                str(error)
+            )
+
+        # --------------------------------------------------------
+        # SMALL DELAY BETWEEN REQUESTS
+        # --------------------------------------------------------
+
+        time.sleep(1)
+
+    return {
+        "crawled": crawled_count,
+        "failed": failed_count
+    }
         # ----------------------------------------------------
         # DISCOVER LINKS
         # ----------------------------------------------------
