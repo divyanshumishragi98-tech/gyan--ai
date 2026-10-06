@@ -140,7 +140,8 @@ def get_db():
         user=unquote(parsed.username or ""),
         password=unquote(parsed.password or ""),
         connect_timeout=10
-    # ============================================================
+    )
+        # ============================================================
 # DATABASE INITIALIZATION
 # ============================================================
 
@@ -490,7 +491,7 @@ def crawl_web_page(url: str):
             if "text/html" not in content_type:
                 return False, "Page is not HTML."
 
-            raw_data = response.read(2_000_000)
+            raw_data = response.read(1_000_000)
 
         html = raw_data.decode(
             "utf-8",
