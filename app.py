@@ -50,8 +50,11 @@ from fastapi import (
     FastAPI,
     Header,
     HTTPException,
-    Body
+    Body,
+    Depends
 )
+
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -598,7 +601,20 @@ def verify_password(
         stored_hash
     )
 
+bearer_scheme = HTTPBearer(auto_error=False)
 
+
+def get_current_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(
+        bearer_scheme
+    )
+):
+    if not credentials:
+        return None
+
+    token = credentials.credentials
+
+    return verify_token(token)
 # ============================================================
 #                         AUTH TOKENS
 # ============================================================
