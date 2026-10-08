@@ -57,7 +57,7 @@ from fastapi import (
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from fastapi.middleware.cors import CORSMiddleware
-
+bearer_scheme = HTTPBearer(auto_error=False)
 
 # ============================================================
 #                         BASIC CONFIG
@@ -3602,20 +3602,27 @@ def api_web_search(
 @app.post("/api/crawl")
 def api_crawl(
     data: dict = Body(...),
-    authorization: Optional[str] = Header(
-        default=None
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(
+        bearer_scheme
     )
 ):
 
+    if not credentials:
+
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required."
+        )
+
     user_id = get_user_id_from_header(
-        authorization
+        f"Bearer {credentials.credentials}"
     )
 
     if not user_id:
 
         raise HTTPException(
             status_code=401,
-            detail="Authentication required."
+            detail="Invalid or expired authentication token."
         )
 
     url = str(
