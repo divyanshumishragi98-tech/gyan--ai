@@ -692,7 +692,9 @@ def verify_token(
 
         return None
 
-
+bearer_scheme = HTTPBearer(
+    auto_error=False
+)
 def get_user_id_from_header(
     authorization: Optional[str]
 ):
