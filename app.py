@@ -57,7 +57,7 @@ from fastapi import (
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from fastapi.middleware.cors import CORSMiddleware
-bearer_scheme = HTTPBearer(auto_error=False)
+
 
 # ============================================================
 #                         BASIC CONFIG
