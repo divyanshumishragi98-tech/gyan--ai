@@ -2942,12 +2942,16 @@ def generate_chat_answer(
 #                         FASTAPI
 # ============================================================
 
+
 app = FastAPI(
     title=APP_TITLE,
     version=APP_VERSION,
     description=(
         "Gyan AI official backend API"
-    )
+    ),
+    swagger_ui_parameters={
+        "persistAuthorization": True
+    }
 )
 
 
