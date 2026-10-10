@@ -58,6 +58,8 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from fastapi.middleware.cors import CORSMiddleware
 
+from search_engine import rank_search_results
+
 
 # ============================================================
 #                         BASIC CONFIG
